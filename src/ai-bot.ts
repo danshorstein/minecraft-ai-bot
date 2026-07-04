@@ -547,6 +547,11 @@ interface ActiveGoal {
   initiator: string;
   iterations: number;
   maxIterations: number;
+  totalCommandsIssued: number;
+  totalBuildCommandsIssued: number;
+  stalledIterations: number;
+  lastActionSummary?: string;
+  lastDebugNote?: string;
 }
 
 let activeGoal: ActiveGoal | null = null;
@@ -561,6 +566,17 @@ let isProcessing = false;
 
 interface ToolExecutionResult {
   summary: string;
+  commandCount: number;
+  buildCommandCount: number;
+  mutatingCommandCount: number;
+  chatOnly?: boolean;
+  scanOnly?: boolean;
+}
+
+interface CommandExecutionStats {
+  commandCount: number;
+  buildCommandCount: number;
+  mutatingCommandCount: number;
 }
 
 interface Offset {
@@ -992,13 +1008,79 @@ function normalizeCommandSequence(commands: unknown): TimedCommand[] {
     .filter((entry): entry is TimedCommand => entry !== null);
 }
 
-async function executeCommandSteps(steps: TimedCommand[], source: string, defaultDelayMs = 100): Promise<void> {
+function getCommandVerb(command: string): string {
+  const normalized = normalizeCommand(command).trim();
+  const withoutSlash = normalized.startsWith('/') ? normalized.slice(1) : normalized;
+  const parts = withoutSlash.split(/\s+/);
+
+  if (parts[0] === 'execute') {
+    const runIndex = parts.indexOf('run');
+    if (runIndex >= 0 && parts[runIndex + 1]) return parts[runIndex + 1].toLowerCase();
+  }
+
+  return (parts[0] || '').toLowerCase();
+}
+
+function getCommandExecutionStats(steps: TimedCommand[]): CommandExecutionStats {
+  const buildVerbs = new Set(['fill', 'setblock', 'clone']);
+  const mutatingVerbs = new Set([
+    'fill',
+    'setblock',
+    'clone',
+    'summon',
+    'give',
+    'effect',
+    'time',
+    'weather',
+    'gamerule',
+    'title',
+    'playsound',
+    'particle',
+    'tp',
+    'kill',
+    'scoreboard',
+  ]);
+
+  let buildCommandCount = 0;
+  let mutatingCommandCount = 0;
+
+  for (const step of steps) {
+    const verb = getCommandVerb(step.command);
+    if (buildVerbs.has(verb)) buildCommandCount++;
+    if (mutatingVerbs.has(verb)) mutatingCommandCount++;
+  }
+
+  return {
+    commandCount: steps.length,
+    buildCommandCount,
+    mutatingCommandCount,
+  };
+}
+
+function toolResult(summary: string, stats: Partial<CommandExecutionStats> = {}, flags: Pick<ToolExecutionResult, 'chatOnly' | 'scanOnly'> = {}): ToolExecutionResult {
+  return {
+    summary,
+    commandCount: stats.commandCount ?? 0,
+    buildCommandCount: stats.buildCommandCount ?? 0,
+    mutatingCommandCount: stats.mutatingCommandCount ?? 0,
+    ...flags,
+  };
+}
+
+async function executeCommandSteps(steps: TimedCommand[], source: string, defaultDelayMs = 100): Promise<CommandExecutionStats> {
+  const stats = getCommandExecutionStats(steps);
+  console.log(
+    `[${source}] Command batch: total=${stats.commandCount}, build=${stats.buildCommandCount}, mutating=${stats.mutatingCommandCount}`
+  );
+
   for (const step of steps) {
     const formattedCmd = normalizeCommand(step.command);
     console.log(`[${source}] Running command: ${formattedCmd}`);
     bot.chat(formattedCmd);
     await sleep(step.delayMs ?? defaultDelayMs);
   }
+
+  return stats;
 }
 
 async function executeToolCall(call: OpenAI.ChatCompletionMessageToolCall, initiator: string, source: string): Promise<ToolExecutionResult> {
@@ -1007,55 +1089,55 @@ async function executeToolCall(call: OpenAI.ChatCompletionMessageToolCall, initi
 
   if (name === 'chat') {
     bot.chat(String(args.message || ''));
-    return { summary: 'sent a chat message' };
+    return toolResult('sent a chat message', {}, { chatOnly: true });
   }
 
   if (name === 'executeCommands') {
     const commands = normalizeCommandSequence(args.commands);
-    await executeCommandSteps(commands, source);
-    return { summary: `ran ${commands.length} raw command(s)` };
+    const stats = await executeCommandSteps(commands, source);
+    return toolResult(`ran ${commands.length} raw command(s)`, stats);
   }
 
   if (name === 'giveItem') {
     const commands = buildGiveItemCommands(args, initiator);
-    await executeCommandSteps(commands, source);
-    return { summary: `gave ${sanitizeResourceId(args.item, 'item')} to ${sanitizeTarget(args.player, initiator)}` };
+    const stats = await executeCommandSteps(commands, source);
+    return toolResult(`gave ${sanitizeResourceId(args.item, 'item')} to ${sanitizeTarget(args.player, initiator)}`, stats);
   }
 
   if (name === 'setPlayerEffect') {
     const commands = buildPlayerEffectCommands(args, initiator);
-    await executeCommandSteps(commands, source);
-    return { summary: `applied ${sanitizeResourceId(args.effect, 'effect')} to ${sanitizeTarget(args.player, initiator)}` };
+    const stats = await executeCommandSteps(commands, source);
+    return toolResult(`applied ${sanitizeResourceId(args.effect, 'effect')} to ${sanitizeTarget(args.player, initiator)}`, stats);
   }
 
   if (name === 'spawnEntity') {
     const commands = buildSpawnEntityCommands(args, initiator);
-    await executeCommandSteps(commands, source);
-    return { summary: `spawned ${commands.length} ${sanitizeResourceId(args.entity, 'entity')}(s)` };
+    const stats = await executeCommandSteps(commands, source);
+    return toolResult(`spawned ${commands.length} ${sanitizeResourceId(args.entity, 'entity')}(s)`, stats);
   }
 
   if (name === 'setWorldState') {
     const commands = buildWorldStateCommands(args);
-    await executeCommandSteps(commands, source);
-    return { summary: `updated world state with ${commands.length} command(s)` };
+    const stats = await executeCommandSteps(commands, source);
+    return toolResult(`updated world state with ${commands.length} command(s)`, stats);
   }
 
   if (name === 'createParticleEffect') {
     const commands = buildParticleCommands(args, initiator);
-    await executeCommandSteps(commands, source);
-    return { summary: `created ${args.effectName || 'particle'} effect` };
+    const stats = await executeCommandSteps(commands, source);
+    return toolResult(`created ${args.effectName || 'particle'} effect`, stats);
   }
 
   if (name === 'launchFireworks') {
     const commands = buildFireworkCommands(args, initiator);
-    await executeCommandSteps(commands, source, 250);
-    return { summary: `launched ${commands.length} firework(s)` };
+    const stats = await executeCommandSteps(commands, source, 250);
+    return toolResult(`launched ${commands.length} firework(s)`, stats);
   }
 
   if (name === 'buildShape') {
     const commands = buildShapeCommands(args, initiator);
-    await executeCommandSteps(commands, source, 20);
-    return { summary: `built ${args.shape || 'shape'} with ${commands.length} command(s)` };
+    const stats = await executeCommandSteps(commands, source, 20);
+    return toolResult(`built ${args.shape || 'shape'} with ${commands.length} command(s)`, stats);
   }
 
   if (name === 'scanArea') {
@@ -1067,13 +1149,13 @@ async function executeToolCall(call: OpenAI.ChatCompletionMessageToolCall, initi
     });
     const firstLines = summary.split('\n').filter(Boolean).slice(0, 5).join(' | ');
     bot.chat(`AIGuy scan: ${firstLines.slice(0, 230)}`);
-    return { summary };
+    return toolResult(summary, {}, { scanOnly: true });
   }
 
   if (name === 'runCommandSequence') {
     const commands = normalizeCommandSequence(args.commands);
-    await executeCommandSteps(commands, source);
-    return { summary: `ran timed sequence with ${commands.length} command(s)` };
+    const stats = await executeCommandSteps(commands, source);
+    return toolResult(`ran timed sequence with ${commands.length} command(s)`, stats);
   }
 
   if (name === 'runSkill') {
@@ -1084,8 +1166,8 @@ async function executeToolCall(call: OpenAI.ChatCompletionMessageToolCall, initi
       direction: args.direction,
     });
     bot.chat(`AIGuy: Running ${skill.name}! ${skill.description}`);
-    await executeCommandSteps(skill.commands, source, 100);
-    return { summary: `ran skill ${skill.name} with ${skill.commands.length} command(s)` };
+    const stats = await executeCommandSteps(skill.commands, source, 100);
+    return toolResult(`ran skill ${skill.name} with ${skill.commands.length} command(s)`, stats);
   }
 
   if (name === 'startGoalLoop') {
@@ -1095,10 +1177,13 @@ async function executeToolCall(call: OpenAI.ChatCompletionMessageToolCall, initi
       successCriteria: String(args.successCriteria || 'The requested goal is complete.'),
       initiator,
       iterations: 0,
-      maxIterations: 8
+      maxIterations: 8,
+      totalCommandsIssued: 0,
+      totalBuildCommandsIssued: 0,
+      stalledIterations: 0,
     };
     setTimeout(runGoalIteration, 2000);
-    return { summary: `started goal loop: ${activeGoal.description}` };
+    return toolResult(`started goal loop: ${activeGoal.description}`);
   }
 
   throw new Error(`Unknown tool "${name}"`);
@@ -1248,8 +1333,11 @@ function handleHelpCommand(username: string, message: string) {
     try {
       const skill = runSkill('nycCity', { player: username });
       void executeCommandSteps(skill.commands, 'AIGuy Direct City', 70)
-        .then(() => {
-          bot.chat(`AIGuy: NYC-style city build complete! Fly up and look around the skyline. 🎆`);
+        .then((stats) => {
+          bot.chat(
+            `AIGuy: NYC-style city build complete! Issued ${stats.commandCount} command(s), ` +
+            `${stats.buildCommandCount} building command(s). Fly up and look around the skyline. 🎆`
+          );
         })
         .catch((err: any) => {
           const errMsg = err?.message || String(err);
@@ -1590,7 +1678,9 @@ async function handleMessage(username: string, message: string) {
       const result = await executeToolCall(call, username, 'AIGuy Action');
       actionSummaries.push(result.summary);
     }
+    console.log(`[AIGuy Debug] Tool actions for "${message}": ${actionSummaries.join(' | ')}`);
   } else if (textResponse) {
+    console.warn(`[AIGuy Debug] Text-only response for "${message}". No Minecraft tools were called.`);
     bot.chat(textResponse);
   }
 
@@ -1632,6 +1722,11 @@ Your active goal: "${activeGoal.description}"
 Success criteria: "${activeGoal.successCriteria}"
 
 Current Step: ${activeGoal.iterations} of ${activeGoal.maxIterations}
+Commands issued so far in this goal: ${activeGoal.totalCommandsIssued}
+Building commands issued so far in this goal: ${activeGoal.totalBuildCommandsIssued}
+Consecutive stalled steps with no real world-changing command: ${activeGoal.stalledIterations}
+Last action summary: ${activeGoal.lastActionSummary || 'none yet'}
+Last debug note: ${activeGoal.lastDebugNote || 'none'}
 
 Current Environment Context:
 ${visionContext}
@@ -1643,6 +1738,8 @@ Your task:
    - Prefer structured tools like buildShape, scanArea, giveItem, spawnEntity, setWorldState, createParticleEffect, launchFireworks, runCommandSequence, or runSkill when they fit.
    - Call the \`executeCommands\` tool only for custom commands that do not fit a structured tool.
    - Optionally call the \`chat\` tool to update the players on your progress or what you are doing.
+   - You MUST issue at least one world-changing tool call on build steps. Chat-only updates do not count as progress.
+   - If you are building a structure, use at least one actual building command via buildShape, runSkill, runCommandSequence, or executeCommands containing /fill, /setblock, or /clone.
 
 CRITICAL COORDINATE CONSISTENCY REMINDER:
 - You MUST be 100% consistent with your coordinates! 
@@ -1667,6 +1764,12 @@ CRITICAL COORDINATE CONSISTENCY REMINDER:
     const toolCalls = responseMessage.tool_calls;
     const textResponse = responseMessage.content;
     let isCompleted = false;
+    const actionSummaries: string[] = [];
+    let iterationCommandCount = 0;
+    let iterationBuildCommandCount = 0;
+    let iterationMutatingCommandCount = 0;
+    let iterationScanOnlyCount = 0;
+    let iterationChatOnlyCount = 0;
 
     if (toolCalls && toolCalls.length > 0) {
       for (const call of toolCalls) {
@@ -1678,15 +1781,53 @@ CRITICAL COORDINATE CONSISTENCY REMINDER:
           isCompleted = true;
           break;
         } else {
-          await executeToolCall(call, activeGoal.initiator, 'AIGuy Goal Action');
+          const result = await executeToolCall(call, activeGoal.initiator, 'AIGuy Goal Action');
+          actionSummaries.push(result.summary);
+          iterationCommandCount += result.commandCount;
+          iterationBuildCommandCount += result.buildCommandCount;
+          iterationMutatingCommandCount += result.mutatingCommandCount;
+          if (result.scanOnly) iterationScanOnlyCount++;
+          if (result.chatOnly) iterationChatOnlyCount++;
         }
       }
     } else if (textResponse) {
+      console.warn(`[AIGuy Goal Debug] Step ${activeGoal.iterations} returned text only and no tool calls.`);
       bot.chat(textResponse);
     }
 
     // Schedule next step if not complete
     if (!isCompleted && activeGoal) {
+      activeGoal.totalCommandsIssued += iterationCommandCount;
+      activeGoal.totalBuildCommandsIssued += iterationBuildCommandCount;
+      activeGoal.lastActionSummary = actionSummaries.join(' | ') || (textResponse ? 'text-only response' : 'no action');
+
+      if (iterationMutatingCommandCount === 0) {
+        activeGoal.stalledIterations++;
+        activeGoal.lastDebugNote = `Step ${activeGoal.iterations} did not issue any world-changing commands.`;
+        console.warn(
+          `[AIGuy Goal Debug] Step ${activeGoal.iterations}/${activeGoal.maxIterations} stalled: ` +
+          `tools=${toolCalls?.length || 0}, commands=${iterationCommandCount}, build=${iterationBuildCommandCount}, ` +
+          `mutating=${iterationMutatingCommandCount}, chatOnly=${iterationChatOnlyCount}, scanOnly=${iterationScanOnlyCount}`
+        );
+        bot.chat(
+          `AIGuy debug: Step ${activeGoal.iterations} did not issue any build/world commands. ` +
+          `Next step must run real commands, not just talk.`
+        );
+      } else {
+        activeGoal.stalledIterations = 0;
+        activeGoal.lastDebugNote =
+          `Step ${activeGoal.iterations} issued ${iterationCommandCount} command(s), including ${iterationBuildCommandCount} build command(s).`;
+        console.log(
+          `[AIGuy Goal Debug] Step ${activeGoal.iterations}/${activeGoal.maxIterations}: ` +
+          `commands=${iterationCommandCount}, build=${iterationBuildCommandCount}, mutating=${iterationMutatingCommandCount}, ` +
+          `summary=${activeGoal.lastActionSummary}`
+        );
+        bot.chat(
+          `AIGuy debug: Step ${activeGoal.iterations} issued ${iterationCommandCount} command(s) ` +
+          `(${iterationBuildCommandCount} building).`
+        );
+      }
+
       // Wait 6 seconds for block updates to settle before checking again
       setTimeout(runGoalIteration, 6000);
     }
