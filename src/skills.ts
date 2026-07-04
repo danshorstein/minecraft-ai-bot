@@ -22,6 +22,7 @@ export const SKILL_DESCRIPTIONS: Record<string, string> = {
   mobBattle: 'Builds a small arena and summons two sides for a quick spectacle.',
   parkourCourse: 'Creates a short randomized floating parkour path.',
   rainbowBridge: 'Builds a colored glass bridge from the player position.',
+  nycCity: 'Builds a New York-inspired city with roads, skyscrapers, a park, bridge, lights, and a statue.',
   enchantGear: 'Gives max-enchanted armor, tools, food, and utility items.',
   lightShow: 'Runs a choreographed sequence of particles, lightning, sounds, and fireworks.',
   protectBase: 'Creates a protective glass dome outline, lights, guards, and a simple moat.',
@@ -110,6 +111,99 @@ function buildParkour(player: string, size: number): TimedCommand[] {
   return commands;
 }
 
+function buildNycCity(player: string): TimedCommand[] {
+  const commands: TimedCommand[] = [
+    { command: '/time set night' },
+    { command: '/weather clear' },
+    { command: '/gamerule doDaylightCycle false' },
+    { command: '/title @a title {"text":"AIGuy City Build","color":"gold","bold":true}' },
+    { command: '/title @a subtitle {"text":"Roads, towers, park, bridge, and skyline incoming","color":"white"}' },
+    at(player, 'fill ~-55 ~-1 ~-55 ~55 ~-1 ~55 grass_block'),
+  ];
+
+  const avenues = [-50, -35, -20, -5, 10, 25, 40, 55];
+  for (const x of avenues) {
+    commands.push(at(player, `fill ~${x - 2} ~0 ~-55 ~${x + 2} ~0 ~55 gray_concrete`));
+    commands.push(at(player, `fill ~${x} ~1 ~-55 ~${x} ~1 ~55 yellow_concrete`));
+  }
+
+  const streets = [-50, -35, -20, -5, 10, 25, 40, 55];
+  for (const z of streets) {
+    commands.push(at(player, `fill ~-55 ~0 ~${z - 2} ~55 ~0 ~${z + 2} gray_concrete`));
+    commands.push(at(player, `fill ~-55 ~1 ~${z} ~55 ~1 ~${z} yellow_concrete`));
+  }
+
+  const towers = [
+    { x1: -49, z1: -49, x2: -42, z2: -42, h: 28, wall: 'deepslate_tiles', window: 'light_blue_stained_glass', roof: 'sea_lantern' },
+    { x1: -31, z1: -49, x2: -23, z2: -41, h: 20, wall: 'white_concrete', window: 'cyan_stained_glass', roof: 'quartz_block' },
+    { x1: -1, z1: -49, x2: 7, z2: -41, h: 36, wall: 'blackstone', window: 'yellow_stained_glass', roof: 'gold_block' },
+    { x1: 15, z1: -49, x2: 23, z2: -42, h: 24, wall: 'stone_bricks', window: 'light_gray_stained_glass', roof: 'smooth_stone' },
+    { x1: 31, z1: -49, x2: 39, z2: -41, h: 31, wall: 'gray_concrete', window: 'blue_stained_glass', roof: 'sea_lantern' },
+    { x1: -49, z1: -31, x2: -41, z2: -23, h: 22, wall: 'light_gray_concrete', window: 'black_stained_glass', roof: 'iron_block' },
+    { x1: -17, z1: -31, x2: -10, z2: -24, h: 34, wall: 'polished_deepslate', window: 'lime_stained_glass', roof: 'diamond_block' },
+    { x1: 15, z1: -31, x2: 23, z2: -23, h: 29, wall: 'cut_copper', window: 'orange_stained_glass', roof: 'oxidized_copper' },
+    { x1: 31, z1: -31, x2: 39, z2: -23, h: 18, wall: 'bricks', window: 'glass', roof: 'red_concrete' },
+    { x1: -49, z1: -1, x2: -41, z2: 7, h: 26, wall: 'smooth_stone', window: 'light_blue_stained_glass', roof: 'lantern' },
+    { x1: -31, z1: -1, x2: -23, z2: 7, h: 16, wall: 'quartz_block', window: 'blue_stained_glass', roof: 'sea_lantern' },
+    { x1: 15, z1: -1, x2: 23, z2: 7, h: 38, wall: 'deepslate_bricks', window: 'yellow_stained_glass', roof: 'beacon' },
+    { x1: 31, z1: -1, x2: 39, z2: 7, h: 21, wall: 'stone', window: 'cyan_stained_glass', roof: 'smooth_stone_slab' },
+    { x1: -49, z1: 15, x2: -41, z2: 23, h: 19, wall: 'brown_concrete', window: 'glass', roof: 'spruce_planks' },
+    { x1: -31, z1: 15, x2: -23, z2: 23, h: 27, wall: 'calcite', window: 'light_blue_stained_glass', roof: 'sea_lantern' },
+    { x1: -1, z1: 15, x2: 7, z2: 23, h: 32, wall: 'tuff', window: 'white_stained_glass', roof: 'gold_block' },
+    { x1: 15, z1: 15, x2: 23, z2: 23, h: 23, wall: 'cyan_terracotta', window: 'blue_stained_glass', roof: 'prismarine' },
+    { x1: 31, z1: 15, x2: 39, z2: 23, h: 28, wall: 'nether_bricks', window: 'red_stained_glass', roof: 'glowstone' },
+    { x1: -49, z1: 31, x2: -41, z2: 39, h: 25, wall: 'andesite', window: 'gray_stained_glass', roof: 'iron_block' },
+    { x1: -17, z1: 31, x2: -10, z2: 39, h: 30, wall: 'black_concrete', window: 'yellow_stained_glass', roof: 'sea_lantern' },
+    { x1: 15, z1: 31, x2: 23, z2: 39, h: 17, wall: 'smooth_quartz', window: 'light_blue_stained_glass', roof: 'quartz_slab' },
+    { x1: 31, z1: 31, x2: 39, z2: 39, h: 35, wall: 'polished_blackstone_bricks', window: 'purple_stained_glass', roof: 'end_rod' },
+  ];
+
+  for (const tower of towers) {
+    commands.push(at(player, `fill ~${tower.x1} ~1 ~${tower.z1} ~${tower.x2} ~${tower.h} ~${tower.z2} ${tower.wall}`));
+    commands.push(at(player, `fill ~${tower.x1 + 1} ~2 ~${tower.z1} ~${tower.x2 - 1} ~${tower.h - 2} ~${tower.z1} ${tower.window}`));
+    commands.push(at(player, `fill ~${tower.x1 + 1} ~2 ~${tower.z2} ~${tower.x2 - 1} ~${tower.h - 2} ~${tower.z2} ${tower.window}`));
+    commands.push(at(player, `fill ~${tower.x1} ~${tower.h + 1} ~${tower.z1} ~${tower.x2} ~${tower.h + 1} ~${tower.z2} ${tower.roof}`));
+  }
+
+  commands.push(
+    at(player, 'fill ~-18 ~1 ~-18 ~8 ~1 ~8 grass_block'),
+    at(player, 'fill ~-16 ~2 ~-16 ~6 ~2 ~6 moss_block'),
+    at(player, 'fill ~-14 ~2 ~-2 ~-4 ~2 ~4 water'),
+    at(player, 'fill ~-2 ~2 ~-14 ~4 ~2 ~-8 dandelion'),
+    at(player, 'setblock ~-15 ~3 ~-15 oak_log'),
+    at(player, 'fill ~-17 ~6 ~-17 ~-13 ~8 ~-13 oak_leaves'),
+    at(player, 'setblock ~5 ~3 ~-15 birch_log'),
+    at(player, 'fill ~3 ~6 ~-17 ~7 ~8 ~-13 birch_leaves'),
+    at(player, 'setblock ~-15 ~3 ~5 oak_log'),
+    at(player, 'fill ~-17 ~6 ~3 ~-13 ~8 ~7 oak_leaves'),
+    at(player, 'setblock ~5 ~3 ~5 birch_log'),
+    at(player, 'fill ~3 ~6 ~3 ~7 ~8 ~7 birch_leaves'),
+    at(player, 'fill ~45 ~1 ~-50 ~54 ~1 ~-41 sand'),
+    at(player, 'fill ~47 ~2 ~-48 ~52 ~4 ~-43 stone_bricks'),
+    at(player, 'fill ~49 ~5 ~-46 ~50 ~18 ~-45 oxidized_copper'),
+    at(player, 'setblock ~49 ~19 ~-45 oxidized_copper'),
+    at(player, 'setblock ~50 ~20 ~-44 glowstone'),
+    at(player, 'setblock ~50 ~21 ~-44 fire'),
+    at(player, 'fill ~40 ~5 ~-44 ~55 ~5 ~-39 stone_bricks'),
+    at(player, 'fill ~40 ~6 ~-44 ~55 ~6 ~-44 iron_bars'),
+    at(player, 'fill ~40 ~6 ~-39 ~55 ~6 ~-39 iron_bars'),
+    at(player, 'fill ~41 ~1 ~-43 ~42 ~12 ~-42 stone_bricks'),
+    at(player, 'fill ~52 ~1 ~-43 ~53 ~12 ~-42 stone_bricks'),
+    at(player, 'fill ~-55 ~1 ~45 ~55 ~1 ~55 blue_ice'),
+    at(player, 'fill ~-55 ~2 ~44 ~55 ~2 ~44 sea_lantern'),
+    at(player, 'fill ~-55 ~2 ~56 ~55 ~2 ~56 sea_lantern'),
+    at(player, 'particle end_rod ~ ~12 ~ 45 20 45 0.01 400 force', 250),
+    firework(player, -45, 28, -45, 250),
+    firework(player, 5, 38, -45, 250),
+    firework(player, 19, 40, 3, 250),
+    firework(player, 35, 36, 35, 250),
+    { command: '/playsound minecraft:entity.firework_rocket.twinkle master @a ~ ~ ~ 1 1' },
+    { command: '/title @a title {"text":"NYC Skyline Ready","color":"aqua","bold":true}' },
+  );
+
+  return commands;
+}
+
 export function getSkillNames(): string[] {
   return Object.keys(SKILL_DESCRIPTIONS);
 }
@@ -180,6 +274,13 @@ export function runSkill(skillName: string, options: SkillRunOptions): SkillDefi
         name: 'rainbowBridge',
         description: SKILL_DESCRIPTIONS.rainbowBridge,
         commands: buildRainbowBridge(player, options.direction, size),
+      };
+
+    case 'nycCity':
+      return {
+        name: 'nycCity',
+        description: SKILL_DESCRIPTIONS.nycCity,
+        commands: buildNycCity(player),
       };
 
     case 'enchantGear':

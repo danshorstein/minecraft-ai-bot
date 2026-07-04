@@ -80,6 +80,7 @@ Advanced Building:
 - Dome: prefer buildShape with shape "dome".
 - Pyramid: prefer buildShape with shape "pyramid".
 - Rainbow road: prefer runSkill with skillName "rainbowBridge".
+- Large city / NYC skyline: prefer runSkill with skillName "nycCity". Players can also type !city or !nyc to run the deterministic city builder directly.
 - Floating island starter: ["/execute at <player> run fill ~-5 ~-1 ~-5 ~5 ~-1 ~5 grass_block", "/execute at <player> run fill ~-4 ~-3 ~-4 ~4 ~-2 ~4 dirt", "/execute at <player> run fill ~-2 ~-5 ~-2 ~2 ~-4 ~2 stone"]
 - Pixel art canvas: ["/execute at <player> run fill ~3 ~1 ~8 ~18 ~16 ~8 white_concrete", "/execute at <player> run fill ~2 ~0 ~8 ~19 ~17 ~8 black_concrete outline"]
 
@@ -1240,6 +1241,29 @@ function handleHelpCommand(username: string, message: string) {
     return;
   }
 
+  if (cmd === '!city' || cmd === '!nyc') {
+    activeGoal = null;
+    bot.chat(`AIGuy: Building a deterministic NYC-style city right here. Roads, towers, park, bridge, statue, lights. 🏙️`);
+
+    try {
+      const skill = runSkill('nycCity', { player: username });
+      void executeCommandSteps(skill.commands, 'AIGuy Direct City', 70)
+        .then(() => {
+          bot.chat(`AIGuy: NYC-style city build complete! Fly up and look around the skyline. 🎆`);
+        })
+        .catch((err: any) => {
+          const errMsg = err?.message || String(err);
+          console.error('[AIGuy Direct City Error]', err);
+          bot.chat(`AIGuy: I hit an error while building the city: ${errMsg}`);
+        });
+    } catch (err: any) {
+      const errMsg = err?.message || String(err);
+      console.error('[AIGuy Direct City Setup Error]', err);
+      bot.chat(`AIGuy: I could not start the city build: ${errMsg}`);
+    }
+    return;
+  }
+
   // Model Switch Command
   if (cmd === '!model') {
     if (parts.length < 2) {
@@ -1271,7 +1295,7 @@ function handleHelpCommand(username: string, message: string) {
     bot.chat(`6. runSkill - Combo skills: ${getSkillNames().join(', ')}`);
     bot.chat(`7. startGoalLoop - Run an autonomous, self-verifying build cycle.`);
     bot.chat(`8. !model <id> - Switch AI model on the fly! 🧠`);
-    bot.chat(`👉 Direct Commands: Type "!stay" to make me stay, or "!follow" to make me follow you!`);
+    bot.chat(`👉 Direct Commands: !city / !nyc builds a reliable city; !stay makes me stay; !follow makes me follow you!`);
     bot.chat(`👉 Type "!help <tool>" (e.g., !help startGoalLoop) to learn how they work!`);
     return;
   }
@@ -1316,6 +1340,10 @@ function handleHelpCommand(username: string, message: string) {
     } else if (toolName === 'runskill' || toolName === 'skill') {
       bot.chat(`AIGuy: 🌟 Tool: runSkill`);
       bot.chat(`- Description: Runs combo skills: ${getSkillNames().join(', ')}`);
+    } else if (toolName === 'city' || toolName === 'nyc') {
+      bot.chat(`AIGuy: 🏙️ Command: !city / !nyc`);
+      bot.chat(`- Description: Runs a deterministic NYC-style city build with roads, towers, a park, bridge, statue, lights, and fireworks.`);
+      bot.chat(`- Usage: Stand where you want the city centered, then type !city.`);
     } else if (toolName === 'startgoalloop' || toolName === 'goalloop' || toolName === 'goal') {
       bot.chat(`AIGuy: 🤖 Tool: startGoalLoop (Agent Mode)`);
       bot.chat(`- Description: Starts an autonomous loop where AIGuy builds, scans, and verifies progress until a success criteria is met.`);
