@@ -1,0 +1,3 @@
+[submodule "minecraft-mcp-server"]
+	path = minecraft-mcp-server
+	url = https://github.com/nicholasgriffintn/minecraft-mcp-server.git

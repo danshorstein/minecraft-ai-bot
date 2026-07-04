@@ -1,0 +1,34 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Minecraft server runtime (binary, world data, logs, player data)
+minecraft-server/
+
+# Environment variables (API keys, secrets)
+.env
+.env.*
+
+# Game state files (generated at runtime)
+game_state.json
+move_response.json
+move_error.json
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+npm-debug.log*
+
+# Lock files (optional — uncomment if you want to commit package-lock.json)
+# package-lock.json
