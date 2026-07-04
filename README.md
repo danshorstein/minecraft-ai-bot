@@ -87,9 +87,9 @@ The bot defaults to **GLM 5.2** (`z-ai/glm-5.2`) via OpenRouter.
 ### CLI Flag
 
 ```bash
-npm run start-bot -- --model anthropic/claude-sonnet-4
-npm run start-bot -- --model openai/gpt-4.1
-npm run start-bot -- --model google/gemini-2.5-flash
+npm run start-bot -- --model anthropic/claude-sonnet-5
+npm run start-bot -- --model openai/gpt-5.5
+npm run start-bot -- --model google/gemini-3.5-flash
 ```
 
 You can use **any model ID** from the [OpenRouter models page](https://openrouter.ai/models).
@@ -99,7 +99,7 @@ You can use **any model ID** from the [OpenRouter models page](https://openroute
 While playing, type in Minecraft chat:
 
 ```
-!model anthropic/claude-sonnet-4
+!model anthropic/claude-sonnet-5
 ```
 
 Type `!model` with no arguments to see the current model.
