@@ -1,22 +1,19 @@
 {
-  "name": "minecraft-chess-ai",
+  "name": "minecraft-ai-companion-bot",
   "version": "1.0.0",
-  "description": "An MCP client that connects to Minecraft to play chess using a Minecraft MCP server",
+  "description": "An AI companion bot that joins a local Minecraft server, chats, follows players, and builds with structured tools",
   "type": "module",
-  "main": "dist/index.js",
+  "main": "dist/ai-bot.js",
   "scripts": {
-    "start": "tsx src/index.ts",
+    "start": "tsx src/ai-bot.ts",
     "build": "tsc",
     "setup-server": "node scripts/setup-server.js",
     "start-server": "node scripts/start-server.js",
-    "start-live": "tsx src/index.ts --port 25565 --username ChessBot",
     "start-bot": "tsx src/ai-bot.ts"
   },
   "dependencies": {
-    "openai": "^4.73.0",
-    "@modelcontextprotocol/sdk": "^1.27.1",
-    "chess.js": "^1.0.0-beta.6",
-    "mineflayer": "^4.37.1"
+    "mineflayer": "^4.37.1",
+    "openai": "^4.73.0"
   },
   "devDependencies": {
     "@types/node": "^20.11.20",

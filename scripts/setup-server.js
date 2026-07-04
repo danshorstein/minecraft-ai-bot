@@ -81,7 +81,7 @@ async function main() {
     'level-type=flat',
     'allow-flight=true',
     'enable-command-block=true',
-    'motd=Minecraft Chess AI Server',
+    'motd=Minecraft AIGuy Server',
     'sync-chunk-writes=false',
     'view-distance=6'
   ].join('\n') + '\n';

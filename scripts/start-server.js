@@ -42,10 +42,9 @@ async function main() {
 
     if (!serverStarted && chunk.includes('Done')) {
       serverStarted = true;
-      console.log('\n[Server Manager] Server started successfully! Auto OP-ing AIGuy and ChessBot...');
+      console.log('\n[Server Manager] Server started successfully! Auto OP-ing AIGuy...');
       setTimeout(() => {
         if (server.stdin) {
-          server.stdin.write('op ChessBot\n');
           server.stdin.write('op AIGuy\n');
         }
       }, 2000);

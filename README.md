@@ -2,8 +2,6 @@
 
 An AI-powered Minecraft companion bot that joins your local server as a player, chats with you, follows you around, and builds awesome things using slash commands — all powered by LLMs via [OpenRouter](https://openrouter.ai).
 
-Also includes a **Minecraft Chess** mode that renders a full playable chess game on the Minecraft world using 3D animal piece statues!
-
 ![Minecraft](https://img.shields.io/badge/Minecraft-1.20.4-brightgreen)
 ![Node.js](https://img.shields.io/badge/Node.js-18+-blue)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
@@ -18,17 +16,12 @@ Also includes a **Minecraft Chess** mode that renders a full playable chess game
 - **Chats with players** — tells jokes, explains what it's doing, and responds to everything
 - **Follows players** around the world with smooth movement and auto-jumping
 - **Builds structures** using `/fill`, `/setblock`, `/summon`, and other commands
+- **Minecraft skills cookbook** in the system prompt, with ready-to-use recipes for particles, fireworks, effects, builds, mini-games, scoreboards, gear, and world control
+- **Structured Minecraft tools** for safer item giving, player effects, entity spawning, world state changes, particles, fireworks, shape building, area scans, and timed command sequences
+- **Prebuilt combo skills** such as party mode, spleef arena, mob battle, parkour course, rainbow bridge, enchanted gear, light show, and base protection
 - **Passive vision** — scans nearby blocks and entities every time someone chats, so it can "see" the world
 - **Autonomous goal loop** — give it a complex task (e.g. "build a castle") and it will self-iterate, verify, and complete it
 - **Multiple AI models** — swap models on the fly via CLI flag or in-game `!model` command
-
-### ♟️ Chess Mode
-- Renders a full 8×8 chessboard on the Minecraft world floor
-- Each piece is a unique passive mob on a pedestal (sheep for pawns, horses for knights, etc.)
-- Play moves from the terminal or in-game chat
-- Built-in minimax AI opponent with alpha-beta pruning
-
----
 
 ## 🚀 Quick Start
 
@@ -76,6 +69,8 @@ export OPENROUTER_API_KEY="sk-or-v1-your-key-here"
 npm run start-bot
 ```
 
+The bot reads `OPENROUTER_API_KEY` from the process environment, so export it in the shell where you run `npm run start-bot`.
+
 AIGuy will join the server and start chatting! 🚀
 
 ---
@@ -121,17 +116,22 @@ Type `!model` with no arguments to see the current model.
 
 Just chat normally and AIGuy will respond! Ask it to build things, summon mobs, change the time, or anything else.
 
----
+### AIGuy Tool Surface
 
-## ♟️ Chess Mode
+The model can now call these structured tools instead of hand-writing fragile Minecraft command syntax:
 
-To play chess in Minecraft:
-
-```bash
-npm run start-live
-```
-
-This spawns a ChessBot that builds a chessboard and lets you play against a built-in AI. Type moves in standard notation (`e2e4`, `Nf3`) in the terminal or in-game chat.
+| Tool | What it does |
+|------|--------------|
+| `giveItem` | Gives items with optional names, lore, enchantments, and unbreakable NBT |
+| `setPlayerEffect` | Applies potion effects with duration/amplifier parameters |
+| `spawnEntity` | Summons entities with names, NoAI, glowing, equipment, and offsets |
+| `setWorldState` | Sets time, weather, and gamerules |
+| `createParticleEffect` | Runs named particle combos like heart bursts and portal swirls |
+| `launchFireworks` | Launches single, barrage, ring, or finale firework patterns |
+| `buildShape` | Builds spheres, domes, pyramids, walls, floors, cubes, and bridges |
+| `scanArea` | Performs targeted block/entity scans around a player |
+| `runCommandSequence` | Runs commands with configurable delays |
+| `runSkill` | Runs prebuilt combo skills: `partyMode`, `spleefArena`, `mobBattle`, `parkourCourse`, `rainbowBridge`, `enchantGear`, `lightShow`, `protectBase` |
 
 ---
 
@@ -141,13 +141,10 @@ This spawns a ChessBot that builds a chessboard and lets you play against a buil
 minecraft-ai-bot/
 ├── src/
 │   ├── ai-bot.ts         # AIGuy companion bot (main bot)
-│   ├── index.ts           # Chess game controller
-│   ├── chess-engine.ts    # Chess engine with minimax AI
-│   └── mcp-client.ts      # MCP protocol client for Minecraft
+│   └── skills.ts         # Prebuilt AIGuy combo skills
 ├── scripts/
 │   ├── setup-server.js    # Downloads & configures Paper server
 │   └── start-server.js    # Starts the Minecraft server
-├── minecraft-mcp-server/  # Minecraft MCP server (git submodule)
 ├── package.json
 ├── tsconfig.json
 └── README.md
@@ -188,5 +185,3 @@ This project is licensed under the MIT License — see the [LICENSE](LICENSE) fi
 - [Mineflayer](https://github.com/PrismarineJS/mineflayer) — Minecraft bot framework
 - [OpenRouter](https://openrouter.ai) — Universal LLM API gateway
 - [PaperMC](https://papermc.io) — High-performance Minecraft server
-- [chess.js](https://github.com/jhlywa/chess.js) — Chess move validation & engine
-- [Minecraft MCP Server](https://github.com/nicholasgriffintn/minecraft-mcp-server) — MCP protocol for Minecraft

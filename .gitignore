@@ -11,11 +11,6 @@ minecraft-server/
 .env
 .env.*
 
-# Game state files (generated at runtime)
-game_state.json
-move_response.json
-move_error.json
-
 # OS files
 .DS_Store
 Thumbs.db
