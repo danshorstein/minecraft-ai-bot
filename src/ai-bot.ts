@@ -537,6 +537,8 @@ const bot = mineflayer.createBot({
   username: 'AIGuy',
 });
 
+let connectionFailed = false;
+
 // Autonomous Goal Loop State
 interface ActiveGoal {
   description: string;
@@ -1132,12 +1134,22 @@ bot.on('chat', (username, message) => {
   processQueue();
 });
 
-bot.on('error', (err) => {
+bot.on('error', (err: any) => {
+  if (err?.code === 'ECONNREFUSED') {
+    connectionFailed = true;
+    console.error('[AIGuy] Could not connect to localhost:25565. Start the Minecraft server first with: npm run start-server');
+    return;
+  }
+
   console.error('[AIGuy Error]', err);
 });
 
 bot.on('end', (reason) => {
-  console.log('[AIGuy] Disconnected from server:', reason);
+  if (connectionFailed) {
+    console.log('[AIGuy] Connection closed because the Minecraft server was not reachable.');
+  } else {
+    console.log('[AIGuy] Disconnected from server:', reason);
+  }
   if (followInterval) clearInterval(followInterval);
 });
 
