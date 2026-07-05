@@ -545,6 +545,7 @@ interface ActiveGoal {
   description: string;
   successCriteria: string;
   initiator: string;
+  anchor?: CommandAnchor;
   iterations: number;
   maxIterations: number;
   totalCommandsIssued: number;
@@ -569,6 +570,7 @@ interface ToolExecutionResult {
   commandCount: number;
   buildCommandCount: number;
   mutatingCommandCount: number;
+  anchoredCommandCount: number;
   chatOnly?: boolean;
   scanOnly?: boolean;
 }
@@ -577,6 +579,18 @@ interface CommandExecutionStats {
   commandCount: number;
   buildCommandCount: number;
   mutatingCommandCount: number;
+  anchoredCommandCount: number;
+}
+
+interface CommandAnchor {
+  player: string;
+  x: number;
+  y: number;
+  z: number;
+}
+
+interface CommandExecutionOptions {
+  anchor?: CommandAnchor;
 }
 
 interface Offset {
@@ -645,6 +659,48 @@ function sanitizeBlockId(value: unknown, fallback: string): string {
 function normalizeCommand(command: string): string {
   const trimmed = command.trim();
   return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+}
+
+function formatAbsoluteCoord(value: number): string {
+  return Number(value.toFixed(2)).toString();
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function captureCommandAnchor(playerName: string): CommandAnchor | undefined {
+  const player = bot.players[playerName];
+  const pos = player?.entity?.position;
+  if (!pos) return undefined;
+
+  return {
+    player: playerName,
+    x: pos.x,
+    y: pos.y,
+    z: pos.z,
+  };
+}
+
+function describeAnchor(anchor: CommandAnchor | undefined): string {
+  if (!anchor) return 'no fixed anchor';
+  return `${anchor.player} @ ${formatAbsoluteCoord(anchor.x)} ${formatAbsoluteCoord(anchor.y)} ${formatAbsoluteCoord(anchor.z)}`;
+}
+
+function anchorCommand(command: string, anchor?: CommandAnchor): { command: string; anchored: boolean } {
+  const normalized = normalizeCommand(command);
+  if (!anchor) return { command: normalized, anchored: false };
+
+  const pattern = new RegExp(`^/execute\\s+at\\s+${escapeRegex(anchor.player)}\\s+run\\s+(.+)$`, 'i');
+  const match = normalized.match(pattern);
+  if (!match) return { command: normalized, anchored: false };
+
+  const innerCommand = match[1];
+  return {
+    command:
+      `/execute positioned ${formatAbsoluteCoord(anchor.x)} ${formatAbsoluteCoord(anchor.y)} ${formatAbsoluteCoord(anchor.z)} run ${innerCommand}`,
+    anchored: true,
+  };
 }
 
 function formatRelative(value: number): string {
@@ -1054,6 +1110,7 @@ function getCommandExecutionStats(steps: TimedCommand[]): CommandExecutionStats 
     commandCount: steps.length,
     buildCommandCount,
     mutatingCommandCount,
+    anchoredCommandCount: 0,
   };
 }
 
@@ -1063,18 +1120,27 @@ function toolResult(summary: string, stats: Partial<CommandExecutionStats> = {},
     commandCount: stats.commandCount ?? 0,
     buildCommandCount: stats.buildCommandCount ?? 0,
     mutatingCommandCount: stats.mutatingCommandCount ?? 0,
+    anchoredCommandCount: stats.anchoredCommandCount ?? 0,
     ...flags,
   };
 }
 
-async function executeCommandSteps(steps: TimedCommand[], source: string, defaultDelayMs = 100): Promise<CommandExecutionStats> {
+async function executeCommandSteps(
+  steps: TimedCommand[],
+  source: string,
+  defaultDelayMs = 100,
+  options: CommandExecutionOptions = {}
+): Promise<CommandExecutionStats> {
   const stats = getCommandExecutionStats(steps);
   console.log(
-    `[${source}] Command batch: total=${stats.commandCount}, build=${stats.buildCommandCount}, mutating=${stats.mutatingCommandCount}`
+    `[${source}] Command batch: total=${stats.commandCount}, build=${stats.buildCommandCount}, ` +
+    `mutating=${stats.mutatingCommandCount}, anchor=${describeAnchor(options.anchor)}`
   );
 
   for (const step of steps) {
-    const formattedCmd = normalizeCommand(step.command);
+    const anchored = anchorCommand(step.command, options.anchor);
+    const formattedCmd = anchored.command;
+    if (anchored.anchored) stats.anchoredCommandCount++;
     console.log(`[${source}] Running command: ${formattedCmd}`);
     bot.chat(formattedCmd);
     await sleep(step.delayMs ?? defaultDelayMs);
@@ -1083,7 +1149,12 @@ async function executeCommandSteps(steps: TimedCommand[], source: string, defaul
   return stats;
 }
 
-async function executeToolCall(call: OpenAI.ChatCompletionMessageToolCall, initiator: string, source: string): Promise<ToolExecutionResult> {
+async function executeToolCall(
+  call: OpenAI.ChatCompletionMessageToolCall,
+  initiator: string,
+  source: string,
+  options: CommandExecutionOptions = {}
+): Promise<ToolExecutionResult> {
   const args = JSON.parse(call.function.arguments || '{}');
   const name = call.function.name;
 
@@ -1094,49 +1165,49 @@ async function executeToolCall(call: OpenAI.ChatCompletionMessageToolCall, initi
 
   if (name === 'executeCommands') {
     const commands = normalizeCommandSequence(args.commands);
-    const stats = await executeCommandSteps(commands, source);
+    const stats = await executeCommandSteps(commands, source, 100, options);
     return toolResult(`ran ${commands.length} raw command(s)`, stats);
   }
 
   if (name === 'giveItem') {
     const commands = buildGiveItemCommands(args, initiator);
-    const stats = await executeCommandSteps(commands, source);
+    const stats = await executeCommandSteps(commands, source, 100, options);
     return toolResult(`gave ${sanitizeResourceId(args.item, 'item')} to ${sanitizeTarget(args.player, initiator)}`, stats);
   }
 
   if (name === 'setPlayerEffect') {
     const commands = buildPlayerEffectCommands(args, initiator);
-    const stats = await executeCommandSteps(commands, source);
+    const stats = await executeCommandSteps(commands, source, 100, options);
     return toolResult(`applied ${sanitizeResourceId(args.effect, 'effect')} to ${sanitizeTarget(args.player, initiator)}`, stats);
   }
 
   if (name === 'spawnEntity') {
     const commands = buildSpawnEntityCommands(args, initiator);
-    const stats = await executeCommandSteps(commands, source);
+    const stats = await executeCommandSteps(commands, source, 100, options);
     return toolResult(`spawned ${commands.length} ${sanitizeResourceId(args.entity, 'entity')}(s)`, stats);
   }
 
   if (name === 'setWorldState') {
     const commands = buildWorldStateCommands(args);
-    const stats = await executeCommandSteps(commands, source);
+    const stats = await executeCommandSteps(commands, source, 100, options);
     return toolResult(`updated world state with ${commands.length} command(s)`, stats);
   }
 
   if (name === 'createParticleEffect') {
     const commands = buildParticleCommands(args, initiator);
-    const stats = await executeCommandSteps(commands, source);
+    const stats = await executeCommandSteps(commands, source, 100, options);
     return toolResult(`created ${args.effectName || 'particle'} effect`, stats);
   }
 
   if (name === 'launchFireworks') {
     const commands = buildFireworkCommands(args, initiator);
-    const stats = await executeCommandSteps(commands, source, 250);
+    const stats = await executeCommandSteps(commands, source, 250, options);
     return toolResult(`launched ${commands.length} firework(s)`, stats);
   }
 
   if (name === 'buildShape') {
     const commands = buildShapeCommands(args, initiator);
-    const stats = await executeCommandSteps(commands, source, 20);
+    const stats = await executeCommandSteps(commands, source, 20, options);
     return toolResult(`built ${args.shape || 'shape'} with ${commands.length} command(s)`, stats);
   }
 
@@ -1154,7 +1225,7 @@ async function executeToolCall(call: OpenAI.ChatCompletionMessageToolCall, initi
 
   if (name === 'runCommandSequence') {
     const commands = normalizeCommandSequence(args.commands);
-    const stats = await executeCommandSteps(commands, source);
+    const stats = await executeCommandSteps(commands, source, 100, options);
     return toolResult(`ran timed sequence with ${commands.length} command(s)`, stats);
   }
 
@@ -1166,16 +1237,19 @@ async function executeToolCall(call: OpenAI.ChatCompletionMessageToolCall, initi
       direction: args.direction,
     });
     bot.chat(`AIGuy: Running ${skill.name}! ${skill.description}`);
-    const stats = await executeCommandSteps(skill.commands, source, 100);
+    const stats = await executeCommandSteps(skill.commands, source, 100, options);
     return toolResult(`ran skill ${skill.name} with ${skill.commands.length} command(s)`, stats);
   }
 
   if (name === 'startGoalLoop') {
     bot.chat(`AIGuy: *Entering autonomous goal mode!* 🤖\n*Goal:* ${args.goalDescription}\n*Success Criteria:* ${args.successCriteria}`);
+    const goalAnchor = options.anchor || captureCommandAnchor(initiator);
+    bot.chat(`AIGuy debug: Goal anchor locked at ${describeAnchor(goalAnchor)}.`);
     activeGoal = {
       description: String(args.goalDescription || 'Minecraft goal'),
       successCriteria: String(args.successCriteria || 'The requested goal is complete.'),
       initiator,
+      anchor: goalAnchor,
       iterations: 0,
       maxIterations: 8,
       totalCommandsIssued: 0,
@@ -1328,15 +1402,18 @@ function handleHelpCommand(username: string, message: string) {
 
   if (cmd === '!city' || cmd === '!nyc') {
     activeGoal = null;
+    const anchor = captureCommandAnchor(username);
     bot.chat(`AIGuy: Building a deterministic NYC-style city right here. Roads, towers, park, bridge, statue, lights. 🏙️`);
+    bot.chat(`AIGuy debug: City build anchor locked at ${describeAnchor(anchor)}.`);
 
     try {
       const skill = runSkill('nycCity', { player: username });
-      void executeCommandSteps(skill.commands, 'AIGuy Direct City', 70)
+      void executeCommandSteps(skill.commands, 'AIGuy Direct City', 70, { anchor })
         .then((stats) => {
           bot.chat(
             `AIGuy: NYC-style city build complete! Issued ${stats.commandCount} command(s), ` +
-            `${stats.buildCommandCount} building command(s). Fly up and look around the skyline. 🎆`
+            `${stats.buildCommandCount} building command(s), anchored ${stats.anchoredCommandCount}. ` +
+            `Fly up and look around the skyline. 🎆`
           );
         })
         .catch((err: any) => {
@@ -1631,6 +1708,7 @@ async function handleMessage(username: string, message: string) {
 
   const player = bot.players[username];
   const playerPos = player?.entity?.position;
+  const commandAnchor = captureCommandAnchor(username);
   const playerPosStr = playerPos 
     ? `${username} is at (${playerPos.x.toFixed(1)}, ${playerPos.y.toFixed(1)}, ${playerPos.z.toFixed(1)})` 
     : `${username} position unknown`;
@@ -1640,7 +1718,11 @@ async function handleMessage(username: string, message: string) {
     ? `AIGuy is at (${botPos.x.toFixed(1)}, ${botPos.y.toFixed(1)}, ${botPos.z.toFixed(1)})` 
     : 'AIGuy position unknown';
 
-  const context = `[System Context]\n${playerPosStr}\n${botInfo}\n\n${visionContext}\nTime of day: ${bot.time.timeOfDay}`;
+  const anchorText = commandAnchor
+    ? `Command anchor for this request is fixed at (${commandAnchor.x.toFixed(1)}, ${commandAnchor.y.toFixed(1)}, ${commandAnchor.z.toFixed(1)}). Builds must stay relative to this anchor even if ${username} moves.`
+    : 'No command anchor could be captured for this request.';
+
+  const context = `[System Context]\n${playerPosStr}\n${botInfo}\n${anchorText}\n\n${visionContext}\nTime of day: ${bot.time.timeOfDay}`;
 
   console.log(`[Vision Context sent to ${currentModel}]:\n${context}`);
 
@@ -1675,7 +1757,7 @@ async function handleMessage(username: string, message: string) {
   // Execute actions
   if (toolCalls && toolCalls.length > 0) {
     for (const call of toolCalls) {
-      const result = await executeToolCall(call, username, 'AIGuy Action');
+      const result = await executeToolCall(call, username, 'AIGuy Action', { anchor: commandAnchor });
       actionSummaries.push(result.summary);
     }
     console.log(`[AIGuy Debug] Tool actions for "${message}": ${actionSummaries.join(' | ')}`);
@@ -1722,6 +1804,7 @@ Your active goal: "${activeGoal.description}"
 Success criteria: "${activeGoal.successCriteria}"
 
 Current Step: ${activeGoal.iterations} of ${activeGoal.maxIterations}
+Fixed command anchor: ${describeAnchor(activeGoal.anchor)}
 Commands issued so far in this goal: ${activeGoal.totalCommandsIssued}
 Building commands issued so far in this goal: ${activeGoal.totalBuildCommandsIssued}
 Consecutive stalled steps with no real world-changing command: ${activeGoal.stalledIterations}
@@ -1745,6 +1828,7 @@ CRITICAL COORDINATE CONSISTENCY REMINDER:
 - You MUST be 100% consistent with your coordinates! 
 - If you used relative coordinates with '/execute at <player_username> run <command>' (e.g. ~ ~ ~) in previous steps, you MUST continue using relative coordinates with '/execute at <player_username> run <command>' in this step!
 - NEVER mix absolute coordinates (like "10 -60 25") and relative coordinates (like "~ ~ ~") in the same project, or the parts of your build will spawn in completely different locations!
+- The command executor will anchor '/execute at ${activeGoal.initiator} run ...' to the fixed command anchor above, so keep using that pattern for relative build commands.
 - Do not guess! Look at the "Nearby blocks" and "Nearby entities" coordinates in the context to verify if they are placed correctly.
 `;
 
@@ -1781,7 +1865,7 @@ CRITICAL COORDINATE CONSISTENCY REMINDER:
           isCompleted = true;
           break;
         } else {
-          const result = await executeToolCall(call, activeGoal.initiator, 'AIGuy Goal Action');
+          const result = await executeToolCall(call, activeGoal.initiator, 'AIGuy Goal Action', { anchor: activeGoal.anchor });
           actionSummaries.push(result.summary);
           iterationCommandCount += result.commandCount;
           iterationBuildCommandCount += result.buildCommandCount;
@@ -1820,7 +1904,7 @@ CRITICAL COORDINATE CONSISTENCY REMINDER:
         console.log(
           `[AIGuy Goal Debug] Step ${activeGoal.iterations}/${activeGoal.maxIterations}: ` +
           `commands=${iterationCommandCount}, build=${iterationBuildCommandCount}, mutating=${iterationMutatingCommandCount}, ` +
-          `summary=${activeGoal.lastActionSummary}`
+          `anchor=${describeAnchor(activeGoal.anchor)}, summary=${activeGoal.lastActionSummary}`
         );
         bot.chat(
           `AIGuy debug: Step ${activeGoal.iterations} issued ${iterationCommandCount} command(s) ` +
