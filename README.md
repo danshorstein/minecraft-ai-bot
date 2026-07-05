@@ -113,6 +113,7 @@ Type `!model` with no arguments to see the current model.
 | `!follow` | Make AIGuy follow you |
 | `!stay` / `!stop` | Make AIGuy stop and stand still |
 | `!city` / `!nyc` | Build a deterministic NYC-style city near you |
+| `!castle` / `!fortress` | Build a deterministic castle with a secret lair |
 | `cancel goal` | Stop the autonomous goal loop |
 
 Just chat normally and AIGuy will respond! Ask it to build things, summon mobs, change the time, or anything else.
@@ -132,7 +133,7 @@ The model can now call these structured tools instead of hand-writing fragile Mi
 | `buildShape` | Builds spheres, domes, pyramids, walls, floors, cubes, and bridges |
 | `scanArea` | Performs targeted block/entity scans around a player |
 | `runCommandSequence` | Runs commands with configurable delays |
-| `runSkill` | Runs prebuilt combo skills: `partyMode`, `spleefArena`, `mobBattle`, `parkourCourse`, `rainbowBridge`, `nycCity`, `enchantGear`, `lightShow`, `protectBase` |
+| `runSkill` | Runs prebuilt combo skills: `partyMode`, `spleefArena`, `mobBattle`, `parkourCourse`, `rainbowBridge`, `nycCity`, `castleLair`, `enchantGear`, `lightShow`, `protectBase` |
 
 ---
 

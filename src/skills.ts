@@ -23,6 +23,7 @@ export const SKILL_DESCRIPTIONS: Record<string, string> = {
   parkourCourse: 'Creates a short randomized floating parkour path.',
   rainbowBridge: 'Builds a colored glass bridge from the player position.',
   nycCity: 'Builds a New York-inspired city with roads, skyscrapers, a park, bridge, lights, and a statue.',
+  castleLair: 'Builds a large castle with walls, towers, gate, throne room, and a secret underground lair.',
   enchantGear: 'Gives max-enchanted armor, tools, food, and utility items.',
   lightShow: 'Runs a choreographed sequence of particles, lightning, sounds, and fireworks.',
   protectBase: 'Creates a protective glass dome outline, lights, guards, and a simple moat.',
@@ -39,7 +40,7 @@ const RAINBOW_GLASS = [
 ];
 
 const FIREWORK_NBT =
-  '{LifeTime:20,FireworksItem:{id:"minecraft:firework_rocket",Count:1b,tag:{Fireworks:{Flight:1b,Explosions:[{Type:1b,Colors:[I;11743532,15435844,14602026],FadeColors:[I;4312372,6719955],Trail:1b,Flicker:1b}]}}}}';
+  '{LifeTime:20}';
 
 function sanitizeTarget(player: string): string {
   if (/^[A-Za-z0-9_]{1,16}$/.test(player)) return player;
@@ -204,6 +205,67 @@ function buildNycCity(player: string): TimedCommand[] {
   return commands;
 }
 
+function buildCastleLair(player: string): TimedCommand[] {
+  const commands: TimedCommand[] = [
+    { command: '/time set day' },
+    { command: '/weather clear' },
+    { command: '/title @a title {"text":"Castle Build","color":"gold","bold":true}' },
+    { command: '/title @a subtitle {"text":"Walls, towers, throne room, and secret lair","color":"white"}' },
+    at(player, 'fill ~-28 ~-1 ~-28 ~28 ~-1 ~28 stone_bricks'),
+    at(player, 'fill ~-26 ~0 ~-26 ~26 ~12 ~26 stone_bricks outline'),
+    at(player, 'fill ~-24 ~1 ~-24 ~24 ~11 ~24 air'),
+    at(player, 'fill ~-30 ~0 ~-30 ~-22 ~22 ~-22 cobbled_deepslate'),
+    at(player, 'fill ~22 ~0 ~-30 ~30 ~22 ~-22 cobbled_deepslate'),
+    at(player, 'fill ~-30 ~0 ~22 ~-22 ~22 ~30 cobbled_deepslate'),
+    at(player, 'fill ~22 ~0 ~22 ~30 ~22 ~30 cobbled_deepslate'),
+    at(player, 'fill ~-28 ~23 ~-28 ~-24 ~23 ~-24 stone_brick_slab'),
+    at(player, 'fill ~24 ~23 ~-28 ~28 ~23 ~-24 stone_brick_slab'),
+    at(player, 'fill ~-28 ~23 ~24 ~-24 ~23 ~28 stone_brick_slab'),
+    at(player, 'fill ~24 ~23 ~24 ~28 ~23 ~28 stone_brick_slab'),
+    at(player, 'fill ~-4 ~0 ~-27 ~4 ~8 ~-27 air'),
+    at(player, 'fill ~-5 ~0 ~-28 ~5 ~9 ~-28 dark_oak_planks'),
+    at(player, 'fill ~-3 ~0 ~-29 ~3 ~5 ~-29 iron_bars'),
+    at(player, 'fill ~-24 ~13 ~-24 ~24 ~13 ~-24 stone_bricks'),
+    at(player, 'fill ~-24 ~13 ~24 ~24 ~13 ~24 stone_bricks'),
+    at(player, 'fill ~-24 ~13 ~-24 ~-24 ~13 ~24 stone_bricks'),
+    at(player, 'fill ~24 ~13 ~-24 ~24 ~13 ~24 stone_bricks'),
+    at(player, 'fill ~-20 ~0 ~-18 ~20 ~8 ~12 polished_andesite outline'),
+    at(player, 'fill ~-18 ~1 ~-16 ~18 ~7 ~10 air'),
+    at(player, 'fill ~-18 ~0 ~-16 ~18 ~0 ~10 red_carpet'),
+    at(player, 'fill ~-4 ~1 ~7 ~4 ~4 ~11 gold_block'),
+    at(player, 'setblock ~0 ~5 ~11 emerald_block'),
+    at(player, 'fill ~-16 ~1 ~-18 ~-16 ~5 ~12 glass_pane'),
+    at(player, 'fill ~16 ~1 ~-18 ~16 ~5 ~12 glass_pane'),
+    at(player, 'fill ~-12 ~0 ~15 ~12 ~7 ~23 deepslate_tiles outline'),
+    at(player, 'fill ~-10 ~1 ~17 ~10 ~6 ~21 air'),
+    at(player, 'setblock ~0 ~1 ~17 crafting_table'),
+    at(player, 'setblock ~2 ~1 ~17 furnace'),
+    at(player, 'setblock ~-2 ~1 ~17 chest'),
+    at(player, 'fill ~-10 ~-4 ~-10 ~10 ~-2 ~10 deepslate_bricks outline'),
+    at(player, 'fill ~-9 ~-3 ~-9 ~9 ~-2 ~9 air'),
+    at(player, 'fill ~-8 ~-4 ~-8 ~8 ~-4 ~8 polished_blackstone'),
+    at(player, 'fill ~-2 ~0 ~-2 ~2 ~0 ~2 dark_oak_trapdoor'),
+    at(player, 'fill ~-1 ~-1 ~-1 ~1 ~-3 ~1 ladder'),
+    at(player, 'setblock ~0 ~-3 ~0 lantern'),
+    at(player, 'setblock ~-7 ~-3 ~-7 chest'),
+    at(player, 'setblock ~7 ~-3 ~-7 enchanting_table'),
+    at(player, 'fill ~5 ~-3 ~5 ~8 ~-3 ~8 redstone_block'),
+    at(player, 'fill ~-8 ~-3 ~5 ~-5 ~-3 ~8 bookshelf'),
+    at(player, 'setblock ~0 ~-3 ~8 blackstone'),
+    at(player, 'setblock ~0 ~-2 ~8 dragon_head'),
+    at(player, 'fill ~-32 ~0 ~-32 ~32 ~0 ~32 water outline'),
+    at(player, 'fill ~-3 ~0 ~-34 ~3 ~0 ~-29 oak_planks'),
+    at(player, 'summon iron_golem ~-18 ~1 ~-20'),
+    at(player, 'summon iron_golem ~18 ~1 ~-20'),
+    at(player, 'summon armor_stand ~0 ~1 ~9 {CustomName:\'{"text":"Castle Throne"}\',CustomNameVisible:1b,NoGravity:1b}'),
+    at(player, 'particle happy_villager ~ ~10 ~ 18 8 18 0.05 120 force'),
+    { command: '/playsound minecraft:entity.player.levelup master @a ~ ~ ~ 1 1' },
+    { command: '/title @a title {"text":"Castle Ready","color":"aqua","bold":true}' },
+  ];
+
+  return commands;
+}
+
 export function getSkillNames(): string[] {
   return Object.keys(SKILL_DESCRIPTIONS);
 }
@@ -281,6 +343,13 @@ export function runSkill(skillName: string, options: SkillRunOptions): SkillDefi
         name: 'nycCity',
         description: SKILL_DESCRIPTIONS.nycCity,
         commands: buildNycCity(player),
+      };
+
+    case 'castleLair':
+      return {
+        name: 'castleLair',
+        description: SKILL_DESCRIPTIONS.castleLair,
+        commands: buildCastleLair(player),
       };
 
     case 'enchantGear':
