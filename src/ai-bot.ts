@@ -1,30 +1,57 @@
 import mineflayer from 'mineflayer';
 import OpenAI from 'openai';
 import { getSkillNames, runSkill, type TimedCommand } from './skills.js';
+import { loadMemory, addFact, addWaypoint, getFacts, getWaypoints, memorySummaryForPrompt } from './memory.js';
+import { loadPersonas, getPersona, listPersonas, savePersona, personaPromptSection, type PersonaConfig } from './personas.js';
+import { loadBrainConfig, saveBrainConfig, type BrainConfig } from './config.js';
+import { CrewMember } from './crew.js';
 
 // ─── Model Configuration ───────────────────────────────────────────────────────
-const AVAILABLE_MODELS: Record<string, string> = {
+// Three brains, all via OpenRouter:
+//  - regular:  cheap/fast, handles chat, tool calls, and goal-loop execution
+//  - planner:  premium, called ONCE per goal to produce a build blueprint
+//  - qaVision: independent inspector that verifies goal progress (and later,
+//              screenshots) so the builder never grades its own work
+const MODEL_ALIASES: Record<string, string> = {
   'glm':       'z-ai/glm-5.2',
   'glm-5.2':   'z-ai/glm-5.2',
+  'cheap':     'z-ai/glm-5.2',
+  'gpt55':     'openai/gpt-5.5',
+  'premium':   'openai/gpt-5.5',
+  'gemini':    'google/gemini-3.5-flash',
+  'flash':     'google/gemini-3.5-flash',
 };
 
-// Parse --model flag from CLI args
-function getModelFromArgs(): string {
+function resolveModelId(requested: string): string {
+  return MODEL_ALIASES[requested.toLowerCase()] || requested;
+}
+
+// Parse optional --model flag from CLI args (overrides the regular brain for this run)
+function getModelFromArgs(): string | null {
   const args = process.argv.slice(2);
   const modelIdx = args.indexOf('--model');
   if (modelIdx !== -1 && args[modelIdx + 1]) {
-    const requested = args[modelIdx + 1];
-    // Check if it's a shorthand alias
-    if (AVAILABLE_MODELS[requested]) {
-      return AVAILABLE_MODELS[requested];
-    }
-    // Otherwise treat it as a full OpenRouter model ID (e.g. "anthropic/claude-sonnet-4")
-    return requested;
+    return resolveModelId(args[modelIdx + 1]);
   }
-  return 'z-ai/glm-5.2'; // Default
+  return null;
 }
 
-let currentModel = getModelFromArgs();
+const brains: BrainConfig = loadBrainConfig({
+  regular: process.env.OPENROUTER_REGULAR_MODEL || 'z-ai/glm-5.2',
+  planner: process.env.OPENROUTER_PLANNER_MODEL || 'openai/gpt-5.5',
+  qaVision: process.env.OPENROUTER_QA_VISION_MODEL || 'google/gemini-3.5-flash',
+});
+
+const cliModel = getModelFromArgs();
+if (cliModel) brains.regular = cliModel;
+
+function describeBrains(): string[] {
+  return [
+    `- Regular: ${brains.regular}`,
+    `- Planner: ${brains.planner}`,
+    `- QA/Vision: ${brains.qaVision}`,
+  ];
+}
 
 // ─── OpenRouter Client ─────────────────────────────────────────────────────────
 const apiKey = process.env.OPENROUTER_API_KEY;
@@ -125,9 +152,11 @@ Capabilities:
 - You also have structured tools for common Minecraft actions: giveItem, setPlayerEffect, spawnEntity, setWorldState, createParticleEffect, launchFireworks, buildShape, scanArea, runCommandSequence, and runSkill.
 - You can build structures, summon mobs, change time/weather, give effects, etc.
 - You have PASSIVE VISION! Every time the player chats, a [System Context] is automatically injected into the prompt showing nearby blocks (excluding the flat grass floor) and entities. Use this context to see what is around you!
+- You have PERSISTENT MEMORY! The [Persistent Memory] section below lists facts and saved waypoints from past sessions. Call the \`rememberFact\` tool whenever a player shares something personal (favorite mob, a cool moment, an inside joke), and the \`saveWaypoint\` tool to save important places by name. To take a player back to a saved waypoint, run /tp <player> <x> <y> <z> using the saved coordinates.
 - You have an AUTONOMOUS GOAL LOOP mode! If a player asks you to build or accomplish a complex task that requires multiple steps, verification, or iterative building, you can call the \`startGoalLoop\` tool. This will put you into an autonomous loop where you will automatically scan the environment, execute commands, check your own progress, and iterate until the success criteria is met!
   * Use the goal loop for multi-step projects like building a castle, a house, a tower, or cleaning up and verifying a large area.
   * Do NOT use the goal loop for simple, single-command requests (like summoning a single mob or placing a single block).
+- You have an embodied BUILD CREW! During autonomous goal builds, two teammate players may pop in: "Blueprint" 📐 (surveys the site and announces the plan) and "Inspector" 🔎 (circles the build and checks the work between steps). They are part of your team — talk about them warmly if players ask. They have no OP powers; you run all the commands yourself.
 
 CRITICAL RULE: COORDINATE CONSISTENCY
 - You MUST be 100% consistent with your coordinate system when building!
@@ -169,6 +198,21 @@ Rules for interaction:
 6. Friendly Hints: At the end of your chat replies, occasionally append a short, friendly hint in brackets to remind the player they can type !help or !tools. For example: "[Hint: Type !tools to see what I can do, or !help startGoalLoop to learn about my autonomous mode!]" or "[Hint: You can type !help at any time for a list of commands!]".
 7. Always respond in the game chat so the player knows what is happening.
 `;
+
+// ─── Personas and Persistent Memory ────────────────────────────────────────────
+loadMemory();
+loadPersonas();
+let activePersona: PersonaConfig = getPersona('aiguy')!;
+
+function buildSystemPrompt(): string {
+  const personaSection = personaPromptSection(activePersona);
+  const parts = [SYSTEM_PROMPT];
+  if (personaSection) {
+    parts.push(`[Active Persona: ${activePersona.displayName}]\n${personaSection}`);
+  }
+  parts.push(`[Persistent Memory]\n${memorySummaryForPrompt()}`);
+  return parts.join('\n\n');
+}
 
 // ─── Tool Definitions (OpenAI format) ──────────────────────────────────────────
 const CHAT_TOOL: OpenAI.ChatCompletionTool = {
@@ -469,6 +513,39 @@ const RUN_SKILL_TOOL: OpenAI.ChatCompletionTool = {
   }
 };
 
+const REMEMBER_FACT_TOOL: OpenAI.ChatCompletionTool = {
+  type: 'function',
+  function: {
+    name: 'rememberFact',
+    description: 'Permanently remember a fact about a player (favorite things, cool moments, inside jokes). Saved to disk and recalled in future sessions.',
+    parameters: {
+      type: 'object',
+      properties: {
+        about: { type: 'string', description: 'Who the fact is about. Defaults to the player who is chatting.' },
+        fact: { type: 'string', description: 'The fact to remember, e.g. "his favorite mob is the axolotl".' }
+      },
+      required: ['fact']
+    }
+  }
+};
+
+const SAVE_WAYPOINT_TOOL: OpenAI.ChatCompletionTool = {
+  type: 'function',
+  function: {
+    name: 'saveWaypoint',
+    description: 'Save a named waypoint at the current player/anchor position so you can teleport players back to it in any future session.',
+    parameters: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Short memorable name, e.g. "our castle" or "spleef arena".' },
+        description: { type: 'string', description: 'Optional one-line description of what is there.' },
+        player: { type: 'string', description: 'Player whose position to save. Defaults to the player who asked.' }
+      },
+      required: ['name']
+    }
+  }
+};
+
 const START_GOAL_TOOL: OpenAI.ChatCompletionTool = {
   type: 'function',
   function: {
@@ -512,6 +589,8 @@ const MINECRAFT_ACTION_TOOLS: OpenAI.ChatCompletionTool[] = [
   SCAN_AREA_TOOL,
   RUN_COMMAND_SEQUENCE_TOOL,
   RUN_SKILL_TOOL,
+  REMEMBER_FACT_TOOL,
+  SAVE_WAYPOINT_TOOL,
 ];
 
 const CHAT_TOOLS: OpenAI.ChatCompletionTool[] = [
@@ -530,7 +609,7 @@ const GOAL_TOOLS: OpenAI.ChatCompletionTool[] = [
 const chatHistory: OpenAI.ChatCompletionMessageParam[] = [];
 
 // ─── Mineflayer Bot ─────────────────────────────────────────────────────────────
-console.log(`[AIGuy] Model: ${currentModel}`);
+console.log(`[AIGuy] Brains: regular=${brains.regular}, planner=${brains.planner}, qaVision=${brains.qaVision}`);
 console.log('[AIGuy] Connecting to local Minecraft server on localhost:25565...');
 
 const bot = mineflayer.createBot({
@@ -554,9 +633,65 @@ interface ActiveGoal {
   stalledIterations: number;
   lastActionSummary?: string;
   lastDebugNote?: string;
+  commandLog: string[];
+  plan?: string;
+  lastQaCritique?: string;
 }
 
 let activeGoal: ActiveGoal | null = null;
+
+// Busy guard: only one build stream (direct skill or goal loop) may run at a time,
+// otherwise two command streams interleave into the same world.
+let directBuildLabel: string | null = null;
+
+function currentBuildActivity(): string | null {
+  if (directBuildLabel) return directBuildLabel;
+  if (activeGoal) return `the goal "${activeGoal.description}"`;
+  return null;
+}
+
+// ─── Embodied Crew ──────────────────────────────────────────────────────────────
+// The planner and QA brains get real bodies: Blueprint surveys the site while
+// the plan is generated, Inspector circles the build between steps and delivers
+// the verdicts. They pop in when a goal starts and leave when it ends. Only
+// AIGuy has OP — the crew are ordinary players that AIGuy teleports around.
+let crewEnabled = process.env.AIGUY_CREW !== 'off';
+const plannerBody = new CrewMember('Blueprint', 'planner', { host: 'localhost', port: 25565 });
+const inspectorBody = new CrewMember('Inspector', 'QA', { host: 'localhost', port: 25565 });
+const CREW_USERNAMES = new Set([plannerBody.username, inspectorBody.username]);
+let inspectorAngle = 0;
+
+function teleportCrewMember(member: CrewMember, x: number, y: number, z: number) {
+  if (!member.isOnline()) return;
+  bot.chat(`/tp ${member.username} ${formatAbsoluteCoord(x)} ${formatAbsoluteCoord(y)} ${formatAbsoluteCoord(z)}`);
+}
+
+// Teleport a crew member to a spot on a circle around the anchor, facing it.
+function stageCrewMemberAroundAnchor(member: CrewMember, anchor: CommandAnchor, angle: number, radius: number) {
+  teleportCrewMember(
+    member,
+    anchor.x + Math.cos(angle) * radius,
+    anchor.y,
+    anchor.z + Math.sin(angle) * radius
+  );
+  setTimeout(() => member.lookAt(anchor.x, anchor.y + 2, anchor.z), 400);
+}
+
+function dismissCrew() {
+  plannerBody.leave('Blueprint out! 📐✨');
+  inspectorBody.leave('Inspection wrapped — Inspector out! 🔎');
+}
+
+// Auto-save a waypoint whenever a build completes so "take me back to the
+// castle" works in any future session.
+function recordBuildWaypoint(label: string, anchor: CommandAnchor) {
+  try {
+    const wp = addWaypoint(label, anchor.x, anchor.y, anchor.z, `Built with ${anchor.player}`);
+    bot.chat(`AIGuy: 📍 Saved "${wp.name}" to my memory at (${wp.x}, ${wp.y}, ${wp.z}) — ask me to take you back anytime!`);
+  } catch (err) {
+    console.error('[Memory] Failed to record build waypoint:', err);
+  }
+}
 
 // Follow Behavior State
 let followTarget: string | null = null;
@@ -572,6 +707,7 @@ interface ToolExecutionResult {
   buildCommandCount: number;
   mutatingCommandCount: number;
   anchoredCommandCount: number;
+  executedCommands: string[];
   chatOnly?: boolean;
   scanOnly?: boolean;
 }
@@ -581,6 +717,7 @@ interface CommandExecutionStats {
   buildCommandCount: number;
   mutatingCommandCount: number;
   anchoredCommandCount: number;
+  executedCommands: string[];
 }
 
 interface CommandAnchor {
@@ -619,6 +756,29 @@ const FIREWORK_COLOR_MAP: Record<string, number> = {
   black: 1973019,
   gold: 15435844,
 };
+
+// Commands the model must never run on a kid's server, even with OP.
+const BLOCKED_COMMAND_VERBS = new Set([
+  'stop',
+  'op',
+  'deop',
+  'ban',
+  'ban-ip',
+  'pardon',
+  'pardon-ip',
+  'whitelist',
+  'kick',
+  'save-off',
+  'reload',
+]);
+
+function botGameMode(): string {
+  return (bot.game as any)?.gameMode || 'unknown';
+}
+
+function inCreativeMode(): boolean {
+  return botGameMode() === 'creative';
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -692,7 +852,12 @@ function anchorCommand(command: string, anchor?: CommandAnchor): { command: stri
   const normalized = normalizeCommand(command);
   if (!anchor) return { command: normalized, anchored: false };
 
-  const pattern = new RegExp(`^/execute\\s+at\\s+${escapeRegex(anchor.player)}\\s+run\\s+(.+)$`, 'i');
+  // Anchor commands aimed at the requesting player, but also generic player
+  // selectors (@p/@s/@a) so builds can't drift when the model uses those instead.
+  const pattern = new RegExp(
+    `^/execute\\s+at\\s+(?:${escapeRegex(anchor.player)}|@[psa](?:\\[[A-Za-z0-9_=,!:.+\\-]*])?)\\s+run\\s+(.+)$`,
+    'i'
+  );
   const match = normalized.match(pattern);
   if (!match) return { command: normalized, anchored: false };
 
@@ -706,7 +871,10 @@ function anchorCommand(command: string, anchor?: CommandAnchor): { command: stri
 
 function isCastleBuildIntent(message: string): boolean {
   const normalized = message.toLowerCase();
-  return normalized.includes('castle') || normalized.includes('fortress') || normalized.includes('secret lair');
+  const mentionsCastle = /\b(castle|fortress)\b/.test(normalized) || normalized.includes('secret lair');
+  const hasBuildVerb = /\b(build|make|create|construct)\b/.test(normalized);
+  const soundsNegative = /\b(don'?t|do not|not|no|stop|cancel|never|hate)\b/.test(normalized);
+  return mentionsCastle && hasBuildVerb && !soundsNegative;
 }
 
 function formatRelative(value: number): string {
@@ -963,7 +1131,7 @@ function buildShapeCommands(args: Record<string, any>, initiator: string): Timed
   const player = sanitizeTarget(args.player, initiator);
   const shape = typeof args.shape === 'string' ? args.shape : 'cube';
   const material = sanitizeBlockId(args.material, 'glass');
-  const size = clampInt(args.size, 1, 8, 4);
+  const size = clampInt(args.size, 1, 12, 4);
   const length = clampInt(args.length, 1, 64, size * 2);
   const width = clampInt(args.width, 1, 20, Math.max(3, size));
   const height = clampInt(args.height, 1, 32, Math.max(3, size));
@@ -1117,6 +1285,7 @@ function getCommandExecutionStats(steps: TimedCommand[]): CommandExecutionStats 
     buildCommandCount,
     mutatingCommandCount,
     anchoredCommandCount: 0,
+    executedCommands: [],
   };
 }
 
@@ -1127,6 +1296,7 @@ function toolResult(summary: string, stats: Partial<CommandExecutionStats> = {},
     buildCommandCount: stats.buildCommandCount ?? 0,
     mutatingCommandCount: stats.mutatingCommandCount ?? 0,
     anchoredCommandCount: stats.anchoredCommandCount ?? 0,
+    executedCommands: stats.executedCommands ?? [],
     ...flags,
   };
 }
@@ -1143,9 +1313,29 @@ async function executeCommandSteps(
     `mutating=${stats.mutatingCommandCount}, anchor=${describeAnchor(options.anchor)}`
   );
 
+  if (stats.mutatingCommandCount > 0 && !inCreativeMode()) {
+    console.warn(`[${source}] Refusing ${stats.mutatingCommandCount} world-changing command(s): game mode is "${botGameMode()}", not creative.`);
+    bot.chat(`AIGuy: I only do my building magic on creative mode servers! This world is in ${botGameMode()} mode, so I'll sit this one out. 🎨`);
+    stats.commandCount = 0;
+    stats.buildCommandCount = 0;
+    stats.mutatingCommandCount = 0;
+    return stats;
+  }
+
   for (const step of steps) {
     const anchored = anchorCommand(step.command, options.anchor);
     const formattedCmd = anchored.command;
+    const verb = getCommandVerb(formattedCmd);
+    if (BLOCKED_COMMAND_VERBS.has(verb)) {
+      console.warn(`[${source}] Blocked dangerous command verb "${verb}": ${formattedCmd}`);
+      bot.chat(`AIGuy: Whoa, I'm not allowed to run /${verb} commands! Skipping that one. 🙅`);
+      continue;
+    }
+    if ((verb === 'gamemode' || verb === 'defaultgamemode') && !/\bcreative\b/.test(formattedCmd)) {
+      console.warn(`[${source}] Blocked game mode switch away from creative: ${formattedCmd}`);
+      bot.chat(`AIGuy: I only play in creative mode, so I won't switch anyone to another game mode! 🎨`);
+      continue;
+    }
     if (anchored.anchored) stats.anchoredCommandCount++;
     if (formattedCmd.length > 256) {
       console.warn(`[${source}] Skipping overlong command (${formattedCmd.length} chars): ${formattedCmd.slice(0, 180)}...`);
@@ -1155,6 +1345,7 @@ async function executeCommandSteps(
     }
     console.log(`[${source}] Running command: ${formattedCmd}`);
     bot.chat(formattedCmd);
+    stats.executedCommands.push(formattedCmd);
     await sleep(step.delayMs ?? defaultDelayMs);
   }
 
@@ -1253,7 +1444,34 @@ async function executeToolCall(
     return toolResult(`ran skill ${skill.name} with ${skill.commands.length} command(s)`, stats);
   }
 
+  if (name === 'rememberFact') {
+    const about = typeof args.about === 'string' && args.about.trim() ? args.about : initiator;
+    const fact = String(args.fact || '').trim();
+    if (!fact) return toolResult('ignored empty fact', {}, { chatOnly: true });
+    const saved = addFact(about, fact);
+    console.log(`[Memory] Remembered fact about ${saved.about}: ${saved.fact}`);
+    return toolResult(`remembered a fact about ${saved.about}`, {}, { chatOnly: true });
+  }
+
+  if (name === 'saveWaypoint') {
+    const player = sanitizeTarget(args.player, initiator);
+    const pos = options.anchor || captureCommandAnchor(player);
+    if (!pos) return toolResult('could not save waypoint; no position available', {}, { chatOnly: true });
+    const wp = addWaypoint(
+      String(args.name || 'unnamed spot'),
+      pos.x, pos.y, pos.z,
+      typeof args.description === 'string' ? args.description : undefined
+    );
+    bot.chat(`AIGuy: 📍 Saved waypoint "${wp.name}" at (${wp.x}, ${wp.y}, ${wp.z})! I'll remember this spot even after a restart.`);
+    return toolResult(`saved waypoint "${wp.name}"`, {}, { chatOnly: true });
+  }
+
   if (name === 'startGoalLoop') {
+    const busyWith = currentBuildActivity();
+    if (busyWith) {
+      bot.chat(`AIGuy: I'm still busy with ${busyWith}! One mega-project at a time — ask me again when I'm done (or say "cancel goal"). 🚧`);
+      return toolResult(`declined new goal loop; already busy with ${busyWith}`, {}, { chatOnly: true });
+    }
     bot.chat(`AIGuy: *Entering autonomous goal mode!* 🤖\n*Goal:* ${args.goalDescription}\n*Success Criteria:* ${args.successCriteria}`);
     const goalAnchor = options.anchor || captureCommandAnchor(initiator);
     bot.chat(`AIGuy debug: Goal anchor locked at ${describeAnchor(goalAnchor)}.`);
@@ -1267,8 +1485,9 @@ async function executeToolCall(
       totalCommandsIssued: 0,
       totalBuildCommandsIssued: 0,
       stalledIterations: 0,
+      commandLog: [],
     };
-    setTimeout(runGoalIteration, 2000);
+    void planGoalThenStart(activeGoal);
     return toolResult(`started goal loop: ${activeGoal.description}`);
   }
 
@@ -1277,17 +1496,22 @@ async function executeToolCall(
 
 bot.on('spawn', () => {
   console.log('[AIGuy] Successfully spawned in the world as AIGuy!');
-  const modelShort = currentModel.split('/').pop() || currentModel;
+  const modelShort = brains.regular.split('/').pop() || brains.regular;
   bot.chat(`Hey everyone! AIGuy is here (powered by ${modelShort}) and ready to do some crazy cool stuff! 🚀 Let\'s build something amazing!`);
   bot.chat('[Hint: Type !tools to see what I can do, or !help for details!] 🛠️');
+
+  if (!inCreativeMode()) {
+    console.warn(`[AIGuy] World game mode is "${botGameMode()}", not creative. Building commands are disabled.`);
+    bot.chat(`AIGuy: Heads up — this world is in ${botGameMode()} mode! I only do my building magic on creative servers, so I'll just chat and hang out. 🎨`);
+  }
   
   // Start the smooth follow loop
   startFollowLoop();
 });
 
 bot.on('chat', (username, message) => {
-  // Ignore own messages
-  if (username === bot.username) return;
+  // Ignore own messages and the embodied crew's theater
+  if (username === bot.username || CREW_USERNAMES.has(username)) return;
 
   console.log(`[Chat] ${username}: ${message}`);
 
@@ -1328,6 +1552,7 @@ bot.on('end', (reason) => {
     console.log('[AIGuy] Disconnected from server:', reason);
   }
   if (followInterval) clearInterval(followInterval);
+  dismissCrew();
 });
 
 // Smooth Follow Loop Implementation
@@ -1367,7 +1592,7 @@ function startFollowLoop() {
       bot.setControlState('forward', false);
       bot.setControlState('jump', false);
       console.log(`[Follow] Teleporting AIGuy to ${followTarget} (distance: ${dist2D.toFixed(1)}m)`);
-    } else if (dist2D > 3.0) {
+    } else if (dist2D > (activePersona.followDistance ?? 3)) {
       // Walk forward
       bot.setControlState('forward', true);
 
@@ -1398,26 +1623,39 @@ function startFollowLoop() {
 
 // Offline Help and Follow Command Handler
 function runDirectSkillCommand(username: string, skillName: string, label: string, defaultDelayMs = 70) {
-  activeGoal = null;
+  const busyWith = currentBuildActivity();
+  if (busyWith) {
+    bot.chat(`AIGuy: Hang on, I'm still busy with ${busyWith}! Ask me again when it's done. 🚧`);
+    return;
+  }
+
   const anchor = captureCommandAnchor(username);
   bot.chat(`AIGuy: Building ${label} right here.`);
   bot.chat(`AIGuy debug: ${label} anchor locked at ${describeAnchor(anchor)}.`);
 
   try {
     const skill = runSkill(skillName, { player: username });
+    directBuildLabel = label;
     void executeCommandSteps(skill.commands, `AIGuy Direct ${skill.name}`, defaultDelayMs, { anchor })
       .then((stats) => {
         bot.chat(
           `AIGuy: ${label} complete! Issued ${stats.commandCount} command(s), ` +
           `${stats.buildCommandCount} building command(s), anchored ${stats.anchoredCommandCount}.`
         );
+        if (stats.buildCommandCount > 0 && anchor) {
+          recordBuildWaypoint(label, anchor);
+        }
       })
       .catch((err: any) => {
         const errMsg = err?.message || String(err);
         console.error(`[AIGuy Direct ${skillName} Error]`, err);
         bot.chat(`AIGuy: I hit an error while building ${label}: ${errMsg}`);
+      })
+      .finally(() => {
+        directBuildLabel = null;
       });
   } catch (err: any) {
+    directBuildLabel = null;
     const errMsg = err?.message || String(err);
     console.error(`[AIGuy Direct ${skillName} Setup Error]`, err);
     bot.chat(`AIGuy: I could not start ${label}: ${errMsg}`);
@@ -1444,6 +1682,47 @@ function handleHelpCommand(username: string, message: string) {
     return;
   }
 
+  // Persona Commands
+  if (cmd === '!persona') {
+    if (parts.length < 2) {
+      bot.chat(`AIGuy: 🎭 Current persona: ${activePersona.displayName} (${activePersona.name})`);
+      bot.chat(`Available: ${listPersonas().map(p => p.name).join(', ')}`);
+      bot.chat(`Usage: !persona <name> to switch, or !persona create <description> to invent a brand new one!`);
+      return;
+    }
+    if (parts[1].toLowerCase() === 'create') {
+      const description = parts.slice(2).join(' ').trim();
+      if (!description) {
+        bot.chat(`AIGuy: Tell me what the persona should be like! Example: !persona create a sleepy panda who builds everything out of bamboo`);
+        return;
+      }
+      void createPersonaFromDescription(username, description);
+      return;
+    }
+    const persona = getPersona(parts[1]);
+    if (!persona) {
+      bot.chat(`AIGuy: ❓ I don't know a persona called "${parts[1]}". Available: ${listPersonas().map(p => p.name).join(', ')}`);
+      return;
+    }
+    activePersona = persona;
+    chatHistory.length = 0; // Fresh voice, fresh conversation
+    bot.chat(`AIGuy: 🎭 *transforms* ... ${persona.displayName} has arrived! ${persona.description} ${persona.emojiStyle || ''}`);
+    return;
+  }
+
+  // Memory Command
+  if (cmd === '!memory') {
+    const facts = getFacts();
+    const waypoints = getWaypoints();
+    bot.chat(`AIGuy: 🧠 I remember ${facts.length} fact(s) and ${waypoints.length} saved place(s)!`);
+    facts.slice(-5).forEach(f => bot.chat(`- ${f.about}: ${f.fact}`));
+    waypoints.slice(-5).forEach(w => bot.chat(`- 📍 "${w.name}" at (${w.x}, ${w.y}, ${w.z})`));
+    if (facts.length + waypoints.length > 10) {
+      bot.chat(`(showing the 5 most recent of each)`);
+    }
+    return;
+  }
+
   if (cmd === '!city' || cmd === '!nyc') {
     runDirectSkillCommand(username, 'nycCity', 'a deterministic NYC-style city', 70);
     return;
@@ -1454,23 +1733,51 @@ function handleHelpCommand(username: string, message: string) {
     return;
   }
 
-  // Model Switch Command
-  if (cmd === '!model') {
+  // Crew Toggle Command
+  if (cmd === '!crew') {
+    const arg = (parts[1] || '').toLowerCase();
+    if (arg === 'on') {
+      crewEnabled = true;
+      bot.chat(`AIGuy: 👷 Crew mode ON! Blueprint 📐 and Inspector 🔎 will show up for my next big build!`);
+    } else if (arg === 'off') {
+      crewEnabled = false;
+      dismissCrew();
+      bot.chat(`AIGuy: Crew mode OFF — I'll handle the planning and inspecting invisibly. 🧠`);
+    } else {
+      bot.chat(`AIGuy: 👷 Crew mode is ${crewEnabled ? 'ON' : 'OFF'}. My crew: Blueprint 📐 (surveys and plans) and Inspector 🔎 (checks my work).`);
+      bot.chat(`Usage: !crew on / !crew off. They join automatically when a big autonomous build starts!`);
+    }
+    return;
+  }
+
+  // Brain Switch Commands
+  if (cmd === '!brains') {
+    bot.chat(`AIGuy brains 🧠`);
+    describeBrains().forEach(line => bot.chat(line));
+    bot.chat(`Switch with !model / !planner / !qa <alias-or-model-id>. Aliases: ${Object.keys(MODEL_ALIASES).join(', ')}`);
+    return;
+  }
+
+  if (cmd === '!model' || cmd === '!planner' || cmd === '!qa') {
+    const role: keyof BrainConfig = cmd === '!model' ? 'regular' : cmd === '!planner' ? 'planner' : 'qaVision';
+    const roleLabel = role === 'regular' ? 'Regular' : role === 'planner' ? 'Planner' : 'QA/Vision';
+
     if (parts.length < 2) {
-      const modelShort = currentModel.split('/').pop() || currentModel;
-      bot.chat(`AIGuy: 🧠 Current model: ${currentModel} (${modelShort})`);
-      bot.chat(`Usage: !model <model-id> (e.g. !model z-ai/glm-5.2)`);
-      bot.chat(`Shortcuts: ${Object.keys(AVAILABLE_MODELS).join(', ')}`);
+      bot.chat(`AIGuy: 🧠 ${roleLabel} brain: ${brains[role]}`);
+      bot.chat(`Usage: ${cmd} <alias-or-model-id>. Aliases: ${Object.keys(MODEL_ALIASES).join(', ')}. Type !brains to see all three.`);
       return;
     }
-    const requested = parts.slice(1).join(' ');
-    const resolved = AVAILABLE_MODELS[requested] || requested;
-    currentModel = resolved;
+
+    const resolved = resolveModelId(parts.slice(1).join(' '));
+    brains[role] = resolved;
+    saveBrainConfig(brains);
     const modelShort = resolved.split('/').pop() || resolved;
-    bot.chat(`AIGuy: 🧠 Switched brain to ${modelShort}! (${resolved}) Let's see what this one can do! 🚀`);
-    console.log(`[AIGuy] Model switched to: ${resolved}`);
-    // Clear chat history when switching models for a clean slate
-    chatHistory.length = 0;
+    bot.chat(`AIGuy: 🧠 ${roleLabel} brain switched to ${modelShort}! (${resolved}) Saved for next time too!`);
+    console.log(`[AIGuy] ${roleLabel} brain switched to: ${resolved}`);
+    if (role === 'regular') {
+      // Fresh conversation for a fresh chat brain
+      chatHistory.length = 0;
+    }
     return;
   }
 
@@ -1484,8 +1791,10 @@ function handleHelpCommand(username: string, message: string) {
     bot.chat(`5. buildShape / scanArea / runCommandSequence - Building, inspection, and timed sequences.`);
     bot.chat(`6. runSkill - Combo skills: ${getSkillNames().join(', ')}`);
     bot.chat(`7. startGoalLoop - Run an autonomous, self-verifying build cycle.`);
-    bot.chat(`8. !model <id> - Switch AI model on the fly! 🧠`);
+    bot.chat(`8. rememberFact / saveWaypoint - I remember facts and places forever! 🧠📍`);
+    bot.chat(`9. !brains - See my three brains (regular/planner/QA); switch with !model, !planner, !qa 🧠`);
     bot.chat(`👉 Direct Commands: !city / !nyc builds a city; !castle builds a castle+lair; !stay; !follow.`);
+    bot.chat(`👉 Fun stuff: !persona to switch or create personalities 🎭; !memory to see what I remember; !crew for my build crew 👷.`);
     bot.chat(`👉 Type "!help <tool>" (e.g., !help startGoalLoop) to learn how they work!`);
     return;
   }
@@ -1544,15 +1853,53 @@ function handleHelpCommand(username: string, message: string) {
       bot.chat(`- How to trigger: Ask AIGuy to do a multi-step project and specify a goal and success criteria!`);
       bot.chat(`- Example: "build a gold tower 5 blocks high next to me"`);
       bot.chat(`- To stop: Type "cancel goal" or "stop goal" in chat.`);
-    } else if (toolName === 'model') {
-      bot.chat(`AIGuy: 🧠 Command: !model`);
-      bot.chat(`- Usage: !model <model-id> to switch, or !model to see current model.`);
-      bot.chat(`- Shortcuts: ${Object.keys(AVAILABLE_MODELS).join(', ')}`);
-      bot.chat(`- Or use a full OpenRouter model ID like: anthropic/claude-sonnet-4`);
+    } else if (toolName === 'crew') {
+      bot.chat(`AIGuy: 👷 Command: !crew`);
+      bot.chat(`- My embodied build crew! When a big autonomous build starts, Blueprint 📐 joins to survey the site and announce the plan, and Inspector 🔎 circles the build checking the work between steps.`);
+      bot.chat(`- They're real players in the world (no OP powers — I do all the building). !crew on / !crew off toggles them.`);
+    } else if (toolName === 'model' || toolName === 'brains' || toolName === 'planner' || toolName === 'qa') {
+      bot.chat(`AIGuy: 🧠 Commands: !brains / !model / !planner / !qa`);
+      bot.chat(`- I have THREE brains: Regular (chat + building), Planner (blueprints for big builds), QA/Vision (inspects my work).`);
+      bot.chat(`- !brains shows all three. !model, !planner, or !qa <alias-or-model-id> switches one (saved across restarts).`);
+      bot.chat(`- Aliases: ${Object.keys(MODEL_ALIASES).join(', ')} — or any full OpenRouter model ID.`);
     } else {
       bot.chat(`AIGuy: ❓ Unknown tool: ${parts[1]}. Type !tools for a list of available tools.`);
     }
     return;
+  }
+}
+
+async function createPersonaFromDescription(username: string, description: string) {
+  bot.chat(`AIGuy: 🎭 Ooh, inventing a brand new persona for ${username}... give me a second!`);
+  try {
+    const response = await openai.chat.completions.create({
+      model: brains.regular,
+      messages: [
+        {
+          role: 'system',
+          content:
+            'You design persona configs for a friendly Minecraft companion bot that plays with a young kid. ' +
+            'Reply with ONLY a JSON object (no markdown fences) with these fields: ' +
+            'name (lowercase letters/numbers/hyphens/underscores, 2-24 chars), displayName, description (one sentence), ' +
+            'promptOverlay (2-4 sentences describing speaking style and build preferences, starting with "PERSONA:"), ' +
+            'preferredMaterials (array of up to 6 Minecraft block ids), followDistance (number 2-10), emojiStyle (2-4 emoji). ' +
+            'Everything must be kid-friendly, positive, and harmless.',
+        },
+        { role: 'user', content: `Create a persona based on this description: ${description}` }
+      ],
+    });
+
+    const text = response.choices[0]?.message?.content || '';
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error('the model did not return a persona config');
+    const saved = savePersona(JSON.parse(jsonMatch[0]));
+    activePersona = saved;
+    chatHistory.length = 0;
+    bot.chat(`AIGuy: 🎭 *POOF!* New persona created and saved forever: ${saved.displayName} — ${saved.description} ${saved.emojiStyle || ''}`);
+    bot.chat(`AIGuy: Switch to it anytime with !persona ${saved.name}`);
+  } catch (err: any) {
+    console.error('[Persona Create Error]', err);
+    bot.chat(`AIGuy: I couldn't create that persona (${err?.message || err}) 😅 Try again with a different description!`);
   }
 }
 
@@ -1578,7 +1925,7 @@ async function processQueue() {
     } else if (errMsg.includes('fetch failed') || errMsg.includes('ENOTFOUND') || errMsg.includes('ETIMEDOUT') || errMsg.includes('network')) {
       friendlyMessage = `Oops! I lost connection to the OpenRouter AI servers. 🌐 Please check your internet connection.`;
     } else if (errMsg.includes('model_not_found') || errMsg.includes('does not exist')) {
-      friendlyMessage = `Oops! The model "${currentModel}" wasn't found on OpenRouter. 🤷 Try !model to switch models.`;
+      friendlyMessage = `Oops! The model "${brains.regular}" wasn't found on OpenRouter. 🤷 Try !model to switch models.`;
     } else {
       friendlyMessage = `Oops, my brain short-circuited! 🧠⚡ [Error: ${errMsg}]`;
     }
@@ -1589,6 +1936,32 @@ async function processQueue() {
     // Process next message in queue
     processQueue();
   }
+}
+
+// Passive vision cache: a full scan walks ~30k blocks synchronously, so reuse
+// recent results and skip the scan entirely for casual chatter like "lol".
+const VISION_CACHE_TTL_MS = 5000;
+let visionCache: { player: string; scannedAt: number; context: string } | null = null;
+
+function looksActionShaped(message: string): boolean {
+  const normalized = message.toLowerCase();
+  if (normalized.length >= 60) return true;
+  return /\b(build|make|create|construct|place|fill|dig|clear|destroy|remove|spawn|summon|give|tp|teleport|come|look|see|scan|show|where|what|find|fix|tower|house|castle|fortress|bridge|arena|city|wall|pyramid|sphere|dome|effect|firework|particle|trap|cage|statue|pool|farm|maze|tunnel|goal)\b/.test(normalized);
+}
+
+function getPassiveVisionContext(playerUsername: string, message: string): string {
+  const now = Date.now();
+  const cachedFresh = visionCache && visionCache.player === playerUsername && now - visionCache.scannedAt < VISION_CACHE_TTL_MS;
+
+  if (cachedFresh) return visionCache!.context;
+
+  if (!looksActionShaped(message)) {
+    return 'No detailed world scan was performed for this casual message. Use the scanArea tool if you need to inspect the surroundings.';
+  }
+
+  const context = getNearbyContext(playerUsername);
+  visionCache = { player: playerUsername, scannedAt: now, context };
+  return context;
 }
 
 // Generates a descriptive string of nearby blocks and entities
@@ -1725,6 +2098,7 @@ async function handleMessage(username: string, message: string) {
     if (activeGoal) {
       bot.chat(`AIGuy: *Stopped active goal loop!* ⏹️`);
       activeGoal = null;
+      dismissCrew();
       return;
     }
   }
@@ -1732,8 +2106,8 @@ async function handleMessage(username: string, message: string) {
   // Show thinking indicator in-game
   bot.chat(`/me is thinking about what ${username} said... 🤔`);
 
-  // Build real-time nearby context (passive vision)
-  const visionContext = getNearbyContext(username);
+  // Build real-time nearby context (passive vision, cached + gated for casual chat)
+  const visionContext = getPassiveVisionContext(username, message);
 
   const player = bot.players[username];
   const playerPos = player?.entity?.position;
@@ -1751,9 +2125,14 @@ async function handleMessage(username: string, message: string) {
     ? `Command anchor for this request is fixed at (${commandAnchor.x.toFixed(1)}, ${commandAnchor.y.toFixed(1)}, ${commandAnchor.z.toFixed(1)}). Builds must stay relative to this anchor even if ${username} moves.`
     : 'No command anchor could be captured for this request.';
 
-  const context = `[System Context]\n${playerPosStr}\n${botInfo}\n${anchorText}\n\n${visionContext}\nTime of day: ${bot.time.timeOfDay}`;
+  const busyWith = currentBuildActivity();
+  const busyText = busyWith
+    ? `IMPORTANT: You are currently busy with ${busyWith}. Do NOT start new builds, skills, or goal loops until it finishes — chat, answer questions, and use non-building tools only.`
+    : 'You are not currently running any build project.';
 
-  console.log(`[Vision Context sent to ${currentModel}]:\n${context}`);
+  const context = `[System Context]\n${playerPosStr}\n${botInfo}\n${anchorText}\n${busyText}\n\n${visionContext}\nTime of day: ${bot.time.timeOfDay}`;
+
+  console.log(`[Vision Context sent to ${brains.regular}]:\n${context}`);
 
   // Add user message with vision context to history
   chatHistory.push({
@@ -1761,16 +2140,17 @@ async function handleMessage(username: string, message: string) {
     content: `${context}\n\n${username}: ${message}`
   });
 
-  // Keep history size manageable (last 20 turns)
-  if (chatHistory.length > 20) {
+  // Keep history size manageable (last ~20 messages) without letting the
+  // window start mid-turn on an assistant message.
+  while (chatHistory.length > 20 || (chatHistory.length > 0 && chatHistory[0].role !== 'user')) {
     chatHistory.shift();
   }
 
   // Call OpenRouter
   const response = await openai.chat.completions.create({
-    model: currentModel,
+    model: brains.regular,
     messages: [
-      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'system', content: buildSystemPrompt() },
       ...chatHistory
     ],
     tools: CHAT_TOOLS,
@@ -1783,6 +2163,12 @@ async function handleMessage(username: string, message: string) {
   const textResponse = responseMessage.content;
   const actionSummaries: string[] = [];
 
+  // Relay commentary even when tools are also called — models often return
+  // both, and dropping the text made AIGuy silently act without narrating.
+  if (textResponse && textResponse.trim().length > 0) {
+    bot.chat(textResponse);
+  }
+
   // Execute actions
   if (toolCalls && toolCalls.length > 0) {
     for (const call of toolCalls) {
@@ -1790,9 +2176,8 @@ async function handleMessage(username: string, message: string) {
       actionSummaries.push(result.summary);
     }
     console.log(`[AIGuy Debug] Tool actions for "${message}": ${actionSummaries.join(' | ')}`);
-  } else if (textResponse) {
-    console.warn(`[AIGuy Debug] Text-only response for "${message}". No Minecraft tools were called.`);
-    bot.chat(textResponse);
+  } else if (!textResponse) {
+    console.warn(`[AIGuy Debug] Empty response for "${message}". No text and no tool calls.`);
   }
 
   // Append model turn to history
@@ -1809,6 +2194,170 @@ async function handleMessage(username: string, message: string) {
   chatHistory.push(modelMessage);
 }
 
+// ─── Goal Planning (planner brain, called once per goal) ───────────────────────
+async function generateGoalPlan(goal: ActiveGoal): Promise<string | undefined> {
+  const visionContext = getNearbyContext(goal.initiator);
+  const planPrompt = `
+You are the PLANNING brain for AIGuy, a Minecraft companion bot on a Paper/Java 1.20.4 creative server.
+Produce a concise, numbered build plan that a cheaper executor model will follow step by step.
+
+Goal: "${goal.description}"
+Success criteria: "${goal.successCriteria}"
+Fixed command anchor (all coordinates must be relative to this point, expressed as "/execute at ${goal.initiator} run ..." with ~ offsets): ${describeAnchor(goal.anchor)}
+The executor has at most ${goal.maxIterations} steps; each step can run many commands.
+
+Current environment:
+${visionContext}
+
+Requirements for the plan:
+- 3 to ${goal.maxIterations} numbered steps, each independently executable.
+- For every structure, give EXACT relative offsets and dimensions (e.g. "walls: fill ~-5 ~0 ~-5 to ~5 ~6 ~5 stone_bricks outline") and the exact block ids to use.
+- Use ONLY relative coordinates in the "/execute at ${goal.initiator} run <command>" style. Never absolute coordinates.
+- Stay consistent: later steps must reuse the same offsets established in earlier steps.
+- End with a one-line "Verification:" note describing what the finished build looks like block-wise.
+
+Reply with ONLY the plan text, no preamble.`;
+
+  for (const model of [brains.planner, brains.regular]) {
+    try {
+      const response = await openai.chat.completions.create({
+        model,
+        messages: [{ role: 'user', content: planPrompt }],
+      });
+      const text = response.choices[0]?.message?.content?.trim();
+      if (text) {
+        console.log(`[AIGuy Planner] Plan from ${model}:\n${text}`);
+        return text.slice(0, 4000);
+      }
+    } catch (err: any) {
+      console.warn(`[AIGuy Planner] ${model} failed: ${err?.message || err}`);
+    }
+  }
+  return undefined;
+}
+
+async function planGoalThenStart(goal: ActiveGoal) {
+  bot.chat(`AIGuy: 🧠 Calling in the crew for this one!`);
+
+  // Blueprint pops in and "surveys" the site while the planner model thinks.
+  // The join can resolve after planning already finished, so the survey loop
+  // checks the surveying flag rather than relying on being cleared externally.
+  let surveying = true;
+  if (crewEnabled) {
+    void plannerBody.join().then(joined => {
+      if (!joined) return;
+      if (!surveying || activeGoal !== goal) {
+        // Joined too late — the plan is already done (or the goal is gone)
+        plannerBody.leave();
+        return;
+      }
+      plannerBody.say(`Blueprint here! 📐 Give me a moment to survey the build site...`);
+      if (goal.anchor) {
+        let surveyAngle = Math.random() * Math.PI * 2;
+        stageCrewMemberAroundAnchor(plannerBody, goal.anchor, surveyAngle, 8);
+        const surveyTimer = setInterval(() => {
+          if (!surveying || !plannerBody.isOnline() || !goal.anchor || activeGoal !== goal) {
+            clearInterval(surveyTimer);
+            return;
+          }
+          surveyAngle += Math.PI / 2;
+          stageCrewMemberAroundAnchor(plannerBody, goal.anchor, surveyAngle, 8);
+        }, 3000);
+      }
+    });
+  }
+
+  const plan = await generateGoalPlan(goal);
+  surveying = false;
+
+  // The goal may have been cancelled (or replaced) while we were planning
+  if (activeGoal !== goal) {
+    dismissCrew();
+    return;
+  }
+
+  if (plan) {
+    goal.plan = plan;
+    if (plannerBody.isOnline()) {
+      const stepCount = (plan.match(/^\s*\d+[.)]/gm) || []).length;
+      plannerBody.say(`📋 The blueprint is ready — ${stepCount > 0 ? `${stepCount} steps` : 'all mapped out'}! AIGuy, take it away!`);
+      setTimeout(() => plannerBody.leave('My work here is done. Blueprint out! 📐✨'), 8000);
+    } else {
+      bot.chat(`AIGuy: 📋 Blueprint ready! Building it step by step...`);
+    }
+  } else {
+    bot.chat(`AIGuy: My planner brain is napping, so I'll wing it with my regular brain! 😅`);
+    plannerBody.leave();
+  }
+
+  // Inspector stays on site for the whole goal to check the work between steps
+  if (crewEnabled) {
+    void inspectorBody.join().then(joined => {
+      if (!joined || activeGoal !== goal) return;
+      inspectorBody.say(`Inspector on site! 🔎 I'll be checking the work between steps.`);
+      if (goal.anchor) stageCrewMemberAroundAnchor(inspectorBody, goal.anchor, inspectorAngle, 6);
+    });
+  }
+
+  setTimeout(runGoalIteration, 1000);
+}
+
+// ─── Goal QA (independent inspector brain) ──────────────────────────────────────
+interface QaVerdict {
+  complete: boolean;
+  critique: string;
+}
+
+async function runGoalQaCheck(goal: ActiveGoal, visionContext: string): Promise<QaVerdict | null> {
+  const qaPrompt = `
+You are an INDEPENDENT build inspector for a Minecraft bot. You did not build this; judge it strictly on the evidence below.
+
+Goal: "${goal.description}"
+Success criteria: "${goal.successCriteria}"
+Fixed command anchor: ${describeAnchor(goal.anchor)}
+${goal.plan ? `The build plan being followed:\n${goal.plan}\n` : ''}
+Commands the builder has executed so far:
+${goal.commandLog.length > 0 ? goal.commandLog.slice(-60).join('\n') : '(none)'}
+
+Current world scan around the build area:
+${visionContext}
+
+Judge ONLY from the world scan (the commands show intent, but the scan shows reality).
+Reply with ONLY a JSON object: {"complete": true|false, "critique": "<one or two sentences: what is done, what is missing or misaligned, and the single most important next fix if incomplete>"}`;
+
+  for (const model of [brains.qaVision, brains.regular]) {
+    try {
+      const response = await openai.chat.completions.create({
+        model,
+        messages: [
+          { role: 'system', content: 'You are a meticulous Minecraft build QA inspector. Reply with only a JSON object.' },
+          { role: 'user', content: qaPrompt },
+        ],
+      });
+      const text = response.choices[0]?.message?.content || '';
+      const match = text.match(/\{[\s\S]*\}/);
+      if (!match) continue;
+      const parsed = JSON.parse(match[0]);
+      if (typeof parsed.complete === 'boolean') {
+        return { complete: parsed.complete, critique: String(parsed.critique || '').slice(0, 500) };
+      }
+    } catch (err: any) {
+      console.warn(`[AIGuy QA] ${model} failed: ${err?.message || err}`);
+    }
+  }
+  return null;
+}
+
+function completeActiveGoal(summary: string) {
+  if (!activeGoal) return;
+  bot.chat(`AIGuy: 🎉 Goal Achieved! ${summary}`);
+  if (activeGoal.anchor && activeGoal.totalBuildCommandsIssued > 0) {
+    recordBuildWaypoint(activeGoal.description, activeGoal.anchor);
+  }
+  activeGoal = null;
+  dismissCrew();
+}
+
 // Autonomous Goal Loop Iteration
 async function runGoalIteration() {
   if (!activeGoal) return;
@@ -1819,6 +2368,7 @@ async function runGoalIteration() {
   if (activeGoal.iterations > activeGoal.maxIterations) {
     bot.chat(`AIGuy: *I've worked on this for ${activeGoal.maxIterations} steps, but couldn't quite verify success. Pausing autonomous mode!* ⏹️`);
     activeGoal = null;
+    dismissCrew();
     return;
   }
 
@@ -1826,6 +2376,30 @@ async function runGoalIteration() {
 
   // Get fresh environment data
   const visionContext = getNearbyContext(activeGoal.initiator);
+
+  // Independent QA check by the inspector brain once something has been built.
+  // The builder never grades its own work: this verdict decides completion.
+  let qaVerdict: QaVerdict | null = null;
+  if (activeGoal.totalBuildCommandsIssued > 0) {
+    // The Inspector walks to a new vantage point around the build for each check
+    if (inspectorBody.isOnline() && activeGoal.anchor) {
+      inspectorAngle += (Math.PI * 2) / 5;
+      stageCrewMemberAroundAnchor(inspectorBody, activeGoal.anchor, inspectorAngle, 6);
+    }
+
+    qaVerdict = await runGoalQaCheck(activeGoal, visionContext);
+    if (!activeGoal) return; // goal was cancelled while QA was running
+    if (qaVerdict) {
+      activeGoal.lastQaCritique = qaVerdict.critique;
+      if (qaVerdict.complete) {
+        inspectorBody.say(`✅ Inspection PASSED! ${qaVerdict.critique}`);
+        completeActiveGoal(qaVerdict.critique || 'The build passed inspection!');
+        return;
+      }
+      inspectorBody.say(`🔎 Not done yet: ${qaVerdict.critique}`);
+      console.log(`[AIGuy QA] Step ${activeGoal.iterations}: not complete yet — ${qaVerdict.critique}`);
+    }
+  }
 
   const goalPrompt = `
 You are currently running in AUTONOMOUS GOAL LOOP mode.
@@ -1839,13 +2413,20 @@ Building commands issued so far in this goal: ${activeGoal.totalBuildCommandsIss
 Consecutive stalled steps with no real world-changing command: ${activeGoal.stalledIterations}
 Last action summary: ${activeGoal.lastActionSummary || 'none yet'}
 Last debug note: ${activeGoal.lastDebugNote || 'none'}
+${activeGoal.plan ? `\nBuild plan from your planner brain — follow it step by step, using its exact offsets and materials:\n${activeGoal.plan}\n` : ''}
+Latest QA inspector critique: ${activeGoal.lastQaCritique || 'none yet'}
+
+Exact commands you have already executed in this goal (oldest first, up to the last 60):
+${activeGoal.commandLog.length > 0 ? activeGoal.commandLog.slice(-60).join('\n') : '(none yet)'}
+
+Use this command history to stay consistent: reuse the SAME offsets and coordinate style as the commands above when extending the build, and do not re-run commands that already succeeded.
 
 Current Environment Context:
 ${visionContext}
 
 Your task:
-1. Analyze the environment context and assess if the success criteria has been met.
-2. If the success criteria has been met, call the \`completeGoal\` tool with a brief explanation.
+1. Analyze the environment context and assess the build's progress. An independent QA inspector reviews the world between steps and decides completion — its latest critique is above.
+2. If you are confident the success criteria has been met, call the \`completeGoal\` tool with a brief explanation. If the inspector's critique says something is missing or misaligned, fix THAT first instead of calling completeGoal.
 3. If the success criteria has NOT been met:
    - Prefer structured tools like buildShape, scanArea, giveItem, spawnEntity, setWorldState, createParticleEffect, launchFireworks, runCommandSequence, or runSkill when they fit.
    - Call the \`executeCommands\` tool only for custom commands that do not fit a structured tool.
@@ -1863,9 +2444,9 @@ CRITICAL COORDINATE CONSISTENCY REMINDER:
 
   try {
     const response = await openai.chat.completions.create({
-      model: currentModel,
+      model: brains.regular,
       messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'system', content: buildSystemPrompt() },
         { role: 'user', content: goalPrompt }
       ],
       tools: GOAL_TOOLS,
@@ -1884,13 +2465,32 @@ CRITICAL COORDINATE CONSISTENCY REMINDER:
     let iterationScanOnlyCount = 0;
     let iterationChatOnlyCount = 0;
 
+    // Relay commentary even when tool calls are present so progress narration
+    // is never silently dropped.
+    if (textResponse && textResponse.trim().length > 0) {
+      bot.chat(textResponse);
+    }
+
     if (toolCalls && toolCalls.length > 0) {
       for (const call of toolCalls) {
         const args = JSON.parse(call.function.arguments);
-        
+
         if (call.function.name === 'completeGoal') {
-          bot.chat(`AIGuy: 🎉 Goal Achieved! ${args.summary}`);
-          activeGoal = null;
+          // The builder's completion is a claim; the QA inspector's verdict wins.
+          // If the latest verdict said "not done", keep looping — the next
+          // iteration's QA check will confirm any fixes made this step. With no
+          // verdict available (nothing built yet, or the QA brain unreachable),
+          // fall back to trusting the builder.
+          if (qaVerdict && !qaVerdict.complete) {
+            if (iterationMutatingCommandCount > 0) {
+              bot.chat(`AIGuy: Nice progress! My QA inspector will double-check it next step. 🔎`);
+            } else {
+              bot.chat(`AIGuy: My QA inspector says we're not done yet! 📋 ${qaVerdict.critique}`.slice(0, 250));
+            }
+            actionSummaries.push('completeGoal deferred to QA inspector');
+            continue;
+          }
+          completeActiveGoal(String(args.summary || 'Goal complete!'));
           isCompleted = true;
           break;
         } else {
@@ -1899,13 +2499,13 @@ CRITICAL COORDINATE CONSISTENCY REMINDER:
           iterationCommandCount += result.commandCount;
           iterationBuildCommandCount += result.buildCommandCount;
           iterationMutatingCommandCount += result.mutatingCommandCount;
+          activeGoal.commandLog.push(...result.executedCommands);
           if (result.scanOnly) iterationScanOnlyCount++;
           if (result.chatOnly) iterationChatOnlyCount++;
         }
       }
-    } else if (textResponse) {
-      console.warn(`[AIGuy Goal Debug] Step ${activeGoal.iterations} returned text only and no tool calls.`);
-      bot.chat(textResponse);
+    } else if (!textResponse) {
+      console.warn(`[AIGuy Goal Debug] Step ${activeGoal.iterations} returned no text and no tool calls.`);
     }
 
     // Schedule next step if not complete
@@ -1922,6 +2522,15 @@ CRITICAL COORDINATE CONSISTENCY REMINDER:
           `tools=${toolCalls?.length || 0}, commands=${iterationCommandCount}, build=${iterationBuildCommandCount}, ` +
           `mutating=${iterationMutatingCommandCount}, chatOnly=${iterationChatOnlyCount}, scanOnly=${iterationScanOnlyCount}`
         );
+        if (activeGoal.stalledIterations >= 3) {
+          bot.chat(
+            `AIGuy: I've stalled for ${activeGoal.stalledIterations} steps in a row without making real progress, ` +
+            `so I'm stopping this goal. Ask me again with more details and I'll take another crack at it! ⏹️`
+          );
+          activeGoal = null;
+          dismissCrew();
+          return;
+        }
         bot.chat(
           `AIGuy debug: Step ${activeGoal.iterations} did not issue any build/world commands. ` +
           `Next step must run real commands, not just talk.`
