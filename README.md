@@ -114,9 +114,30 @@ Type `!model` with no arguments to see the current model.
 | `!stay` / `!stop` | Make AIGuy stop and stand still |
 | `!city` / `!nyc` | Build a deterministic NYC-style city near you |
 | `!castle` / `!fortress` | Build a deterministic castle with a secret lair |
+| `!persona` | Show the current persona and list all personas |
+| `!persona <name>` | Switch persona (wizard, pirate, robot, gremlin, aiguy, or any custom one) |
+| `!persona create <description>` | Invent a brand new persona — the AI generates it and saves it to disk forever |
+| `!memory` | Show what AIGuy remembers (player facts and saved waypoints) |
 | `cancel goal` | Stop the autonomous goal loop |
 
 Just chat normally and AIGuy will respond! Ask it to build things, summon mobs, change the time, or anything else.
+
+### Personas 🎭
+
+AIGuy ships with five personalities: **AIGuy Classic**, **Wizzo the Wizard**, **Captain Blockbeard**, **Butler-Bot 3000**, and **Giggles the Gremlin**. Each has its own voice, favorite build materials, and follow distance. Kid-created personas (`!persona create ...`) are saved to `data/personas.json` and survive restarts.
+
+### Persistent Memory 🧠
+
+AIGuy remembers things between sessions in `data/memory.json`:
+
+- **Player facts** — when you tell AIGuy something about yourself, it calls its `rememberFact` tool and recalls it in every future session.
+- **Waypoints** — every completed build is auto-saved as a named waypoint, and the AI can save spots on request (`saveWaypoint`). Ask "take me back to our castle" and it teleports you to the saved coordinates.
+
+### Safety Rails
+
+- AIGuy only runs world-changing commands on **creative mode** servers — in survival/adventure worlds it just chats and follows.
+- Dangerous console commands (`/stop`, `/op`, `/ban`, `/whitelist`, ...) are blocked outright, and game mode switches away from creative are refused.
+- Only one build project runs at a time; new build requests are politely declined until the current one finishes.
 
 ### AIGuy Tool Surface
 

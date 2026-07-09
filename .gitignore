@@ -7,6 +7,9 @@ dist/
 # Minecraft server runtime (binary, world data, logs, player data)
 minecraft-server/
 
+# Bot runtime data (persistent memory, custom personas)
+data/
+
 # Environment variables (API keys, secrets)
 .env
 .env.*
