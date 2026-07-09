@@ -20,7 +20,7 @@ An AI-powered Minecraft companion bot that joins your local server as a player, 
 - **Structured Minecraft tools** for safer item giving, player effects, entity spawning, world state changes, particles, fireworks, shape building, area scans, and timed command sequences
 - **Prebuilt combo skills** such as party mode, spleef arena, mob battle, parkour course, rainbow bridge, enchanted gear, light show, and base protection
 - **Passive vision** — scans nearby blocks and entities every time someone chats, so it can "see" the world
-- **Autonomous goal loop** — give it a complex task (e.g. "build a castle") and it will self-iterate, verify, and complete it
+- **Autonomous goal loop** — give it a complex task (e.g. "build a castle"): the planner brain drafts a blueprint, the regular brain builds step by step, and an independent QA brain inspects the world and decides when it's done
 - **Multiple AI models** — swap models on the fly via CLI flag or in-game `!model` command
 
 ## 🚀 Quick Start
@@ -75,29 +75,46 @@ AIGuy will join the server and start chatting! 🚀
 
 ---
 
-## 🧠 Choosing an AI Model
+## 🧠 The Three Brains
 
-The bot defaults to **GLM 5.2** (`z-ai/glm-5.2`) via OpenRouter.
+AIGuy routes different jobs to different OpenRouter models to balance cost and quality:
 
-### CLI Flag
+| Brain | Default | Used for |
+|-------|---------|----------|
+| **Regular** | `z-ai/glm-5.2` | Chat, tool calls, and executing goal-loop build steps (cheap + fast) |
+| **Planner** | `openai/gpt-5.5` | Called **once** per goal loop to produce a numbered build blueprint (premium) |
+| **QA/Vision** | `google/gemini-3.5-flash` | Independent inspector that verifies goal progress between steps — the builder never grades its own work (multimodal-ready for future screenshot QA) |
+
+If the planner or QA model is unreachable, AIGuy degrades gracefully to the regular brain (and if that fails too, to the old single-brain behavior).
+
+> Verify the default model IDs and pricing on the [OpenRouter models page](https://openrouter.ai/models) — they may change over time.
+
+### Configuring the brains
+
+Environment variables set the defaults:
+
+```bash
+export OPENROUTER_REGULAR_MODEL="z-ai/glm-5.2"
+export OPENROUTER_PLANNER_MODEL="openai/gpt-5.5"
+export OPENROUTER_QA_VISION_MODEL="google/gemini-3.5-flash"
+```
+
+The CLI flag overrides the regular brain for one run:
 
 ```bash
 npm run start-bot -- --model anthropic/claude-sonnet-5
-npm run start-bot -- --model openai/gpt-5.5
-npm run start-bot -- --model google/gemini-3.5-flash
 ```
 
-You can use **any model ID** from the [OpenRouter models page](https://openrouter.ai/models).
-
-### In-Game Command
-
-While playing, type in Minecraft chat:
+### In-Game Commands
 
 ```
-!model anthropic/claude-sonnet-5
+!brains                        # show all three brains
+!model <alias-or-model-id>     # switch the regular chat/action brain
+!planner <alias-or-model-id>   # switch the planning brain
+!qa <alias-or-model-id>        # switch the QA/vision brain
 ```
 
-Type `!model` with no arguments to see the current model.
+Aliases: `glm`, `cheap`, `gpt55`, `premium`, `gemini`, `flash` — or any full OpenRouter model ID. In-game switches are saved to `data/config.json` and survive restarts.
 
 ---
 
@@ -108,8 +125,10 @@ Type `!model` with no arguments to see the current model.
 | `!tools` | List all available tools |
 | `!help` | Show help overview |
 | `!help <tool>` | Detailed help for a specific tool |
-| `!model` | Show current AI model |
-| `!model <id>` | Switch AI model on the fly |
+| `!brains` | Show the three AI brains (regular / planner / QA) |
+| `!model <id>` | Switch the regular chat/action brain |
+| `!planner <id>` | Switch the build-planning brain |
+| `!qa <id>` | Switch the QA/vision inspector brain |
 | `!follow` | Make AIGuy follow you |
 | `!stay` / `!stop` | Make AIGuy stop and stand still |
 | `!city` / `!nyc` | Build a deterministic NYC-style city near you |
