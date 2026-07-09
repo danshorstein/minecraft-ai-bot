@@ -4,6 +4,7 @@ import { getSkillNames, runSkill, type TimedCommand } from './skills.js';
 import { loadMemory, addFact, addWaypoint, getFacts, getWaypoints, memorySummaryForPrompt } from './memory.js';
 import { loadPersonas, getPersona, listPersonas, savePersona, personaPromptSection, type PersonaConfig } from './personas.js';
 import { loadBrainConfig, saveBrainConfig, type BrainConfig } from './config.js';
+import { CrewMember } from './crew.js';
 
 // ─── Model Configuration ───────────────────────────────────────────────────────
 // Three brains, all via OpenRouter:
@@ -155,6 +156,7 @@ Capabilities:
 - You have an AUTONOMOUS GOAL LOOP mode! If a player asks you to build or accomplish a complex task that requires multiple steps, verification, or iterative building, you can call the \`startGoalLoop\` tool. This will put you into an autonomous loop where you will automatically scan the environment, execute commands, check your own progress, and iterate until the success criteria is met!
   * Use the goal loop for multi-step projects like building a castle, a house, a tower, or cleaning up and verifying a large area.
   * Do NOT use the goal loop for simple, single-command requests (like summoning a single mob or placing a single block).
+- You have an embodied BUILD CREW! During autonomous goal builds, two teammate players may pop in: "Blueprint" 📐 (surveys the site and announces the plan) and "Inspector" 🔎 (circles the build and checks the work between steps). They are part of your team — talk about them warmly if players ask. They have no OP powers; you run all the commands yourself.
 
 CRITICAL RULE: COORDINATE CONSISTENCY
 - You MUST be 100% consistent with your coordinate system when building!
@@ -646,6 +648,38 @@ function currentBuildActivity(): string | null {
   if (directBuildLabel) return directBuildLabel;
   if (activeGoal) return `the goal "${activeGoal.description}"`;
   return null;
+}
+
+// ─── Embodied Crew ──────────────────────────────────────────────────────────────
+// The planner and QA brains get real bodies: Blueprint surveys the site while
+// the plan is generated, Inspector circles the build between steps and delivers
+// the verdicts. They pop in when a goal starts and leave when it ends. Only
+// AIGuy has OP — the crew are ordinary players that AIGuy teleports around.
+let crewEnabled = process.env.AIGUY_CREW !== 'off';
+const plannerBody = new CrewMember('Blueprint', 'planner', { host: 'localhost', port: 25565 });
+const inspectorBody = new CrewMember('Inspector', 'QA', { host: 'localhost', port: 25565 });
+const CREW_USERNAMES = new Set([plannerBody.username, inspectorBody.username]);
+let inspectorAngle = 0;
+
+function teleportCrewMember(member: CrewMember, x: number, y: number, z: number) {
+  if (!member.isOnline()) return;
+  bot.chat(`/tp ${member.username} ${formatAbsoluteCoord(x)} ${formatAbsoluteCoord(y)} ${formatAbsoluteCoord(z)}`);
+}
+
+// Teleport a crew member to a spot on a circle around the anchor, facing it.
+function stageCrewMemberAroundAnchor(member: CrewMember, anchor: CommandAnchor, angle: number, radius: number) {
+  teleportCrewMember(
+    member,
+    anchor.x + Math.cos(angle) * radius,
+    anchor.y,
+    anchor.z + Math.sin(angle) * radius
+  );
+  setTimeout(() => member.lookAt(anchor.x, anchor.y + 2, anchor.z), 400);
+}
+
+function dismissCrew() {
+  plannerBody.leave('Blueprint out! 📐✨');
+  inspectorBody.leave('Inspection wrapped — Inspector out! 🔎');
 }
 
 // Auto-save a waypoint whenever a build completes so "take me back to the
@@ -1476,8 +1510,8 @@ bot.on('spawn', () => {
 });
 
 bot.on('chat', (username, message) => {
-  // Ignore own messages
-  if (username === bot.username) return;
+  // Ignore own messages and the embodied crew's theater
+  if (username === bot.username || CREW_USERNAMES.has(username)) return;
 
   console.log(`[Chat] ${username}: ${message}`);
 
@@ -1518,6 +1552,7 @@ bot.on('end', (reason) => {
     console.log('[AIGuy] Disconnected from server:', reason);
   }
   if (followInterval) clearInterval(followInterval);
+  dismissCrew();
 });
 
 // Smooth Follow Loop Implementation
@@ -1698,6 +1733,23 @@ function handleHelpCommand(username: string, message: string) {
     return;
   }
 
+  // Crew Toggle Command
+  if (cmd === '!crew') {
+    const arg = (parts[1] || '').toLowerCase();
+    if (arg === 'on') {
+      crewEnabled = true;
+      bot.chat(`AIGuy: 👷 Crew mode ON! Blueprint 📐 and Inspector 🔎 will show up for my next big build!`);
+    } else if (arg === 'off') {
+      crewEnabled = false;
+      dismissCrew();
+      bot.chat(`AIGuy: Crew mode OFF — I'll handle the planning and inspecting invisibly. 🧠`);
+    } else {
+      bot.chat(`AIGuy: 👷 Crew mode is ${crewEnabled ? 'ON' : 'OFF'}. My crew: Blueprint 📐 (surveys and plans) and Inspector 🔎 (checks my work).`);
+      bot.chat(`Usage: !crew on / !crew off. They join automatically when a big autonomous build starts!`);
+    }
+    return;
+  }
+
   // Brain Switch Commands
   if (cmd === '!brains') {
     bot.chat(`AIGuy brains 🧠`);
@@ -1742,7 +1794,7 @@ function handleHelpCommand(username: string, message: string) {
     bot.chat(`8. rememberFact / saveWaypoint - I remember facts and places forever! 🧠📍`);
     bot.chat(`9. !brains - See my three brains (regular/planner/QA); switch with !model, !planner, !qa 🧠`);
     bot.chat(`👉 Direct Commands: !city / !nyc builds a city; !castle builds a castle+lair; !stay; !follow.`);
-    bot.chat(`👉 Fun stuff: !persona to switch or create personalities 🎭; !memory to see what I remember.`);
+    bot.chat(`👉 Fun stuff: !persona to switch or create personalities 🎭; !memory to see what I remember; !crew for my build crew 👷.`);
     bot.chat(`👉 Type "!help <tool>" (e.g., !help startGoalLoop) to learn how they work!`);
     return;
   }
@@ -1801,6 +1853,10 @@ function handleHelpCommand(username: string, message: string) {
       bot.chat(`- How to trigger: Ask AIGuy to do a multi-step project and specify a goal and success criteria!`);
       bot.chat(`- Example: "build a gold tower 5 blocks high next to me"`);
       bot.chat(`- To stop: Type "cancel goal" or "stop goal" in chat.`);
+    } else if (toolName === 'crew') {
+      bot.chat(`AIGuy: 👷 Command: !crew`);
+      bot.chat(`- My embodied build crew! When a big autonomous build starts, Blueprint 📐 joins to survey the site and announce the plan, and Inspector 🔎 circles the build checking the work between steps.`);
+      bot.chat(`- They're real players in the world (no OP powers — I do all the building). !crew on / !crew off toggles them.`);
     } else if (toolName === 'model' || toolName === 'brains' || toolName === 'planner' || toolName === 'qa') {
       bot.chat(`AIGuy: 🧠 Commands: !brains / !model / !planner / !qa`);
       bot.chat(`- I have THREE brains: Regular (chat + building), Planner (blueprints for big builds), QA/Vision (inspects my work).`);
@@ -2042,6 +2098,7 @@ async function handleMessage(username: string, message: string) {
     if (activeGoal) {
       bot.chat(`AIGuy: *Stopped active goal loop!* ⏹️`);
       activeGoal = null;
+      dismissCrew();
       return;
     }
   }
@@ -2180,18 +2237,68 @@ Reply with ONLY the plan text, no preamble.`;
 }
 
 async function planGoalThenStart(goal: ActiveGoal) {
-  bot.chat(`AIGuy: 🧠 Asking my planner brain (${brains.planner.split('/').pop()}) for a blueprint...`);
+  bot.chat(`AIGuy: 🧠 Calling in the crew for this one!`);
+
+  // Blueprint pops in and "surveys" the site while the planner model thinks.
+  // The join can resolve after planning already finished, so the survey loop
+  // checks the surveying flag rather than relying on being cleared externally.
+  let surveying = true;
+  if (crewEnabled) {
+    void plannerBody.join().then(joined => {
+      if (!joined) return;
+      if (!surveying || activeGoal !== goal) {
+        // Joined too late — the plan is already done (or the goal is gone)
+        plannerBody.leave();
+        return;
+      }
+      plannerBody.say(`Blueprint here! 📐 Give me a moment to survey the build site...`);
+      if (goal.anchor) {
+        let surveyAngle = Math.random() * Math.PI * 2;
+        stageCrewMemberAroundAnchor(plannerBody, goal.anchor, surveyAngle, 8);
+        const surveyTimer = setInterval(() => {
+          if (!surveying || !plannerBody.isOnline() || !goal.anchor || activeGoal !== goal) {
+            clearInterval(surveyTimer);
+            return;
+          }
+          surveyAngle += Math.PI / 2;
+          stageCrewMemberAroundAnchor(plannerBody, goal.anchor, surveyAngle, 8);
+        }, 3000);
+      }
+    });
+  }
+
   const plan = await generateGoalPlan(goal);
+  surveying = false;
 
   // The goal may have been cancelled (or replaced) while we were planning
-  if (activeGoal !== goal) return;
+  if (activeGoal !== goal) {
+    dismissCrew();
+    return;
+  }
 
   if (plan) {
     goal.plan = plan;
-    bot.chat(`AIGuy: 📋 Blueprint ready! Building it step by step...`);
+    if (plannerBody.isOnline()) {
+      const stepCount = (plan.match(/^\s*\d+[.)]/gm) || []).length;
+      plannerBody.say(`📋 The blueprint is ready — ${stepCount > 0 ? `${stepCount} steps` : 'all mapped out'}! AIGuy, take it away!`);
+      setTimeout(() => plannerBody.leave('My work here is done. Blueprint out! 📐✨'), 8000);
+    } else {
+      bot.chat(`AIGuy: 📋 Blueprint ready! Building it step by step...`);
+    }
   } else {
     bot.chat(`AIGuy: My planner brain is napping, so I'll wing it with my regular brain! 😅`);
+    plannerBody.leave();
   }
+
+  // Inspector stays on site for the whole goal to check the work between steps
+  if (crewEnabled) {
+    void inspectorBody.join().then(joined => {
+      if (!joined || activeGoal !== goal) return;
+      inspectorBody.say(`Inspector on site! 🔎 I'll be checking the work between steps.`);
+      if (goal.anchor) stageCrewMemberAroundAnchor(inspectorBody, goal.anchor, inspectorAngle, 6);
+    });
+  }
+
   setTimeout(runGoalIteration, 1000);
 }
 
@@ -2248,6 +2355,7 @@ function completeActiveGoal(summary: string) {
     recordBuildWaypoint(activeGoal.description, activeGoal.anchor);
   }
   activeGoal = null;
+  dismissCrew();
 }
 
 // Autonomous Goal Loop Iteration
@@ -2260,6 +2368,7 @@ async function runGoalIteration() {
   if (activeGoal.iterations > activeGoal.maxIterations) {
     bot.chat(`AIGuy: *I've worked on this for ${activeGoal.maxIterations} steps, but couldn't quite verify success. Pausing autonomous mode!* ⏹️`);
     activeGoal = null;
+    dismissCrew();
     return;
   }
 
@@ -2272,14 +2381,22 @@ async function runGoalIteration() {
   // The builder never grades its own work: this verdict decides completion.
   let qaVerdict: QaVerdict | null = null;
   if (activeGoal.totalBuildCommandsIssued > 0) {
+    // The Inspector walks to a new vantage point around the build for each check
+    if (inspectorBody.isOnline() && activeGoal.anchor) {
+      inspectorAngle += (Math.PI * 2) / 5;
+      stageCrewMemberAroundAnchor(inspectorBody, activeGoal.anchor, inspectorAngle, 6);
+    }
+
     qaVerdict = await runGoalQaCheck(activeGoal, visionContext);
     if (!activeGoal) return; // goal was cancelled while QA was running
     if (qaVerdict) {
       activeGoal.lastQaCritique = qaVerdict.critique;
       if (qaVerdict.complete) {
+        inspectorBody.say(`✅ Inspection PASSED! ${qaVerdict.critique}`);
         completeActiveGoal(qaVerdict.critique || 'The build passed inspection!');
         return;
       }
+      inspectorBody.say(`🔎 Not done yet: ${qaVerdict.critique}`);
       console.log(`[AIGuy QA] Step ${activeGoal.iterations}: not complete yet — ${qaVerdict.critique}`);
     }
   }
@@ -2411,6 +2528,7 @@ CRITICAL COORDINATE CONSISTENCY REMINDER:
             `so I'm stopping this goal. Ask me again with more details and I'll take another crack at it! ⏹️`
           );
           activeGoal = null;
+          dismissCrew();
           return;
         }
         bot.chat(

@@ -87,6 +87,17 @@ AIGuy routes different jobs to different OpenRouter models to balance cost and q
 
 If the planner or QA model is unreachable, AIGuy degrades gracefully to the regular brain (and if that fails too, to the old single-brain behavior).
 
+### The Embodied Crew 👷
+
+The planner and QA brains have **actual bodies in the world**. When an autonomous goal build starts:
+
+1. **Blueprint** 📐 joins the server, teleports to the build site, and paces around "surveying" while the planner model drafts the blueprint — then announces the plan in chat and leaves.
+2. **Inspector** 🔎 joins for the whole build, walks to a new vantage point around the structure before each QA check, and delivers the verdict in chat ("✅ Inspection PASSED!" / "🔎 Not done yet: the roof is missing").
+
+They're ordinary players — **only AIGuy has OP**, so the crew physically cannot run commands; AIGuy teleports them around. If they can't join (server full, whitelist), the build continues without the show. Toggle with `!crew on` / `!crew off`, or set `AIGUY_CREW=off` to disable at startup.
+
+> Make sure `max-players` in `server.properties` leaves room for 3 bots plus the humans.
+
 > Verify the default model IDs and pricing on the [OpenRouter models page](https://openrouter.ai/models) — they may change over time.
 
 ### Configuring the brains
@@ -137,6 +148,7 @@ Aliases: `glm`, `cheap`, `gpt55`, `premium`, `gemini`, `flash` — or any full O
 | `!persona <name>` | Switch persona (wizard, pirate, robot, gremlin, aiguy, or any custom one) |
 | `!persona create <description>` | Invent a brand new persona — the AI generates it and saves it to disk forever |
 | `!memory` | Show what AIGuy remembers (player facts and saved waypoints) |
+| `!crew` / `!crew on` / `!crew off` | Toggle the embodied build crew (Blueprint 📐 + Inspector 🔎) |
 | `cancel goal` | Stop the autonomous goal loop |
 
 Just chat normally and AIGuy will respond! Ask it to build things, summon mobs, change the time, or anything else.
