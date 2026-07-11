@@ -843,6 +843,34 @@ function captureCommandAnchor(playerName: string): CommandAnchor | undefined {
   };
 }
 
+/** Retry anchor capture with short delays, teleporting to the player first if needed. */
+async function captureCommandAnchorWithRetry(
+  playerName: string,
+  retries = 5,
+  delayMs = 1500
+): Promise<CommandAnchor | undefined> {
+  // First attempt — might already be in range
+  let anchor = captureCommandAnchor(playerName);
+  if (anchor) return anchor;
+
+  // Teleport the bot to the player so their entity loads
+  console.log(`[Anchor] Player entity not visible, teleporting AIGuy to ${playerName}...`);
+  bot.chat(`/tp AIGuy ${playerName}`);
+
+  for (let i = 0; i < retries; i++) {
+    await new Promise(r => setTimeout(r, delayMs));
+    anchor = captureCommandAnchor(playerName);
+    if (anchor) {
+      console.log(`[Anchor] Captured after ${i + 1} retries: ${describeAnchor(anchor)}`);
+      return anchor;
+    }
+    console.log(`[Anchor] Retry ${i + 1}/${retries} — still can't see ${playerName}'s entity`);
+  }
+
+  console.warn(`[Anchor] Failed to capture anchor for ${playerName} after ${retries} retries.`);
+  return undefined;
+}
+
 function describeAnchor(anchor: CommandAnchor | undefined): string {
   if (!anchor) return 'no fixed anchor';
   return `${anchor.player} @ ${formatAbsoluteCoord(anchor.x)} ${formatAbsoluteCoord(anchor.y)} ${formatAbsoluteCoord(anchor.z)}`;
@@ -1473,7 +1501,14 @@ async function executeToolCall(
       return toolResult(`declined new goal loop; already busy with ${busyWith}`, {}, { chatOnly: true });
     }
     bot.chat(`AIGuy: *Entering autonomous goal mode!* 🤖\n*Goal:* ${args.goalDescription}\n*Success Criteria:* ${args.successCriteria}`);
-    const goalAnchor = options.anchor || captureCommandAnchor(initiator);
+
+    // Ensure we have a valid anchor before starting — teleport to the player
+    // and retry if their entity isn't loaded yet.
+    const goalAnchor = options.anchor || await captureCommandAnchorWithRetry(initiator);
+    if (!goalAnchor) {
+      bot.chat(`AIGuy: I can't lock on to your position! 📍 Come a bit closer (or let me teleport to you) and ask again.`);
+      return toolResult('could not capture anchor for goal; player entity not visible', {}, { chatOnly: true });
+    }
     bot.chat(`AIGuy debug: Goal anchor locked at ${describeAnchor(goalAnchor)}.`);
     activeGoal = {
       description: String(args.goalDescription || 'Minecraft goal'),
@@ -2195,6 +2230,8 @@ async function handleMessage(username: string, message: string) {
 }
 
 // ─── Goal Planning (planner brain, called once per goal) ───────────────────────
+const PLANNER_TIMEOUT_MS = 60_000; // 60 seconds per planner model attempt
+
 async function generateGoalPlan(goal: ActiveGoal): Promise<string | undefined> {
   const visionContext = getNearbyContext(goal.initiator);
   const planPrompt = `
@@ -2219,18 +2256,30 @@ Requirements for the plan:
 Reply with ONLY the plan text, no preamble.`;
 
   for (const model of [brains.planner, brains.regular]) {
+    const startTime = Date.now();
+    console.log(`[AIGuy Planner] Requesting plan from ${model}...`);
     try {
-      const response = await openai.chat.completions.create({
+      const apiCall = openai.chat.completions.create({
         model,
         messages: [{ role: 'user', content: planPrompt }],
       });
+
+      // Race the API call against a timeout so a slow/hung model can't stall forever
+      const timeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`Planner timed out after ${PLANNER_TIMEOUT_MS / 1000}s`)), PLANNER_TIMEOUT_MS)
+      );
+
+      const response = await Promise.race([apiCall, timeout]);
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
       const text = response.choices[0]?.message?.content?.trim();
       if (text) {
-        console.log(`[AIGuy Planner] Plan from ${model}:\n${text}`);
+        console.log(`[AIGuy Planner] Plan from ${model} (${elapsed}s):\n${text}`);
         return text.slice(0, 4000);
       }
+      console.warn(`[AIGuy Planner] ${model} returned empty content (${elapsed}s).`);
     } catch (err: any) {
-      console.warn(`[AIGuy Planner] ${model} failed: ${err?.message || err}`);
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      console.warn(`[AIGuy Planner] ${model} failed after ${elapsed}s: ${err?.message || err}`);
     }
   }
   return undefined;
@@ -2267,8 +2316,33 @@ async function planGoalThenStart(goal: ActiveGoal) {
     });
   }
 
+  // Periodic in-game progress updates so the player knows we haven't frozen
+  const planningStart = Date.now();
+  const thinkingMessages = [
+    '🧠 Still thinking... designing the layout...',
+    '🧠 Crunching the coordinates... almost there...',
+    '🧠 Mapping out the build plan... hang tight...',
+    '🧠 Just a few more seconds on the blueprint...',
+  ];
+  let thinkMsgIdx = 0;
+  const progressTimer = setInterval(() => {
+    if (activeGoal !== goal) {
+      clearInterval(progressTimer);
+      return;
+    }
+    const elapsed = ((Date.now() - planningStart) / 1000).toFixed(0);
+    const msg = thinkingMessages[thinkMsgIdx % thinkingMessages.length];
+    bot.chat(`AIGuy: ${msg} (${elapsed}s)`);
+    console.log(`[AIGuy Planner] Still waiting for plan... ${elapsed}s elapsed`);
+    thinkMsgIdx++;
+  }, 12_000); // every 12 seconds
+
   const plan = await generateGoalPlan(goal);
+  clearInterval(progressTimer);
   surveying = false;
+
+  const planElapsed = ((Date.now() - planningStart) / 1000).toFixed(1);
+  console.log(`[AIGuy Planner] Planning phase completed in ${planElapsed}s (plan ${plan ? 'received' : 'failed'})`);
 
   // The goal may have been cancelled (or replaced) while we were planning
   if (activeGoal !== goal) {
@@ -2286,7 +2360,7 @@ async function planGoalThenStart(goal: ActiveGoal) {
       bot.chat(`AIGuy: 📋 Blueprint ready! Building it step by step...`);
     }
   } else {
-    bot.chat(`AIGuy: My planner brain is napping, so I'll wing it with my regular brain! 😅`);
+    bot.chat(`AIGuy: My planner brain timed out or is napping 😴 — I'll wing it with my regular brain! Let's go! 🚀`);
     plannerBody.leave();
   }
 

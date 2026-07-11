@@ -20,7 +20,9 @@ An AI-powered Minecraft companion bot that joins your local server as a player, 
 - **Structured Minecraft tools** for safer item giving, player effects, entity spawning, world state changes, particles, fireworks, shape building, area scans, and timed command sequences
 - **Prebuilt combo skills** such as party mode, spleef arena, mob battle, parkour course, rainbow bridge, enchanted gear, light show, and base protection
 - **Passive vision** — scans nearby blocks and entities every time someone chats, so it can "see" the world
+- **Fixed build anchoring** — build commands lock to the player's request position, so moving after asking for a build does not shift later commands
 - **Autonomous goal loop** — give it a complex task (e.g. "build a castle"): the planner brain drafts a blueprint, the regular brain builds step by step, and an independent QA brain inspects the world and decides when it's done
+- **Runtime build debugging** — goal steps report command/build-command counts and warn when the bot only chats instead of changing the world
 - **Multiple AI models** — swap models on the fly via CLI flag or in-game `!model` command
 
 ## 🚀 Quick Start
@@ -40,9 +42,16 @@ cd minecraft-ai-bot
 npm install
 ```
 
+If you already have a checkout, update it with:
+
+```bash
+git pull --ff-only
+npm install
+```
+
 ### 2. Set Up the Minecraft Server
 
-This downloads a Paper 1.20.4 server and configures it for local play (creative mode, flat world, offline mode):
+This downloads a Paper 1.20.4 server if needed and configures it for local play (creative mode, flat world, offline mode):
 
 ```bash
 npm run setup-server
@@ -54,7 +63,7 @@ npm run setup-server
 npm run start-server
 ```
 
-Wait for `Done` in the output. The server runs on `localhost:25565`.
+Wait for `Done` in the output. The server runs on `localhost:25565`, and the server wrapper automatically runs `op AIGuy` so the bot can build with commands.
 
 ### 4. Connect with Minecraft
 
@@ -73,6 +82,14 @@ The bot reads `OPENROUTER_API_KEY` from the process environment, so export it in
 
 AIGuy will join the server and start chatting! 🚀
 
+### 6. Verify the Project Builds
+
+```bash
+npm run build
+```
+
+This runs the TypeScript compiler and is the fastest local sanity check after code or docs changes.
+
 ---
 
 ## 🧠 The Three Brains
@@ -85,7 +102,7 @@ AIGuy routes different jobs to different OpenRouter models to balance cost and q
 | **Planner** | `openai/gpt-5.5` | Called **once** per goal loop to produce a numbered build blueprint (premium) |
 | **QA/Vision** | `google/gemini-3.5-flash` | Independent inspector that verifies goal progress between steps — the builder never grades its own work (multimodal-ready for future screenshot QA) |
 
-If the planner or QA model is unreachable, AIGuy degrades gracefully to the regular brain (and if that fails too, to the old single-brain behavior).
+If the planner or QA model is unreachable, AIGuy degrades gracefully to the regular brain (and if that fails too, to the old single-brain behavior). The planner has a 60-second timeout per model attempt and posts periodic in-game "still thinking" updates during longer planning calls.
 
 ### The Embodied Crew 👷
 
@@ -126,6 +143,19 @@ npm run start-bot -- --model anthropic/claude-sonnet-5
 ```
 
 Aliases: `glm`, `cheap`, `gpt55`, `premium`, `gemini`, `flash` — or any full OpenRouter model ID. In-game switches are saved to `data/config.json` and survive restarts.
+
+### Build Anchoring and Goal Debugging
+
+For each player request, AIGuy captures a fixed command anchor from the player's position. Commands that use `/execute at <player> run ...` are rewritten internally to `/execute positioned <x> <y> <z> run ...`, so the build stays at the original request location even if the player walks away.
+
+For autonomous goal builds, AIGuy keeps a running command log and reports:
+
+- total commands issued
+- build commands such as `/fill`, `/setblock`, and `/clone`
+- broader world-changing commands such as `/summon`, `/give`, `/effect`, `/particle`, `/tp`, and `/scoreboard`
+- stalled steps where the model talked but did not issue real world-changing commands
+
+If AIGuy cannot see the requesting player's entity when a goal starts, it teleports to the player, retries anchor capture briefly, and stops the goal cleanly if it still cannot lock onto a position.
 
 ---
 
@@ -195,10 +225,16 @@ The model can now call these structured tools instead of hand-writing fragile Mi
 minecraft-ai-bot/
 ├── src/
 │   ├── ai-bot.ts         # AIGuy companion bot (main bot)
+│   ├── config.ts         # Persisted brain model config
+│   ├── crew.ts           # Blueprint and Inspector puppet bots
+│   ├── memory.ts         # Persistent facts and waypoint memory
+│   ├── personas.ts       # Built-in and custom persona configs
 │   └── skills.ts         # Prebuilt AIGuy combo skills
 ├── scripts/
 │   ├── setup-server.js    # Downloads & configures Paper server
 │   └── start-server.js    # Starts the Minecraft server
+├── minecraft-server/      # Generated local Paper server files
+├── data/                  # Generated persisted config, memory, and personas
 ├── package.json
 ├── tsconfig.json
 └── README.md
@@ -211,6 +247,10 @@ minecraft-ai-bot/
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `OPENROUTER_API_KEY` | ✅ Yes | Your OpenRouter API key ([get one here](https://openrouter.ai/keys)) |
+| `OPENROUTER_REGULAR_MODEL` | No | Default regular chat/action model. Defaults to `z-ai/glm-5.2`. |
+| `OPENROUTER_PLANNER_MODEL` | No | Default planner model for autonomous goal blueprints. Defaults to `openai/gpt-5.5`. |
+| `OPENROUTER_QA_VISION_MODEL` | No | Default QA/vision model for goal inspection. Defaults to `google/gemini-3.5-flash`. |
+| `AIGUY_CREW` | No | Set to `off` to disable the Blueprint and Inspector puppet bots at startup. |
 
 > ⚠️ **Never commit your API key!** The `.gitignore` excludes `.env` files, but always double-check before pushing.
 
